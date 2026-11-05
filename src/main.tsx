@@ -40,8 +40,8 @@ function Root() {
         <App />
       ) : (
         <LandSearch
-          onUseInPlan={(state, price) => {
-            loadListingIntoPlan(state, price);
+          onUseInPlan={(state, price, acres) => {
+            loadListingIntoPlan(state, price, acres);
             setTab("plan");
           }}
         />

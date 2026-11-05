@@ -257,6 +257,37 @@ input.input[type="number"] {
   border-radius: 2px;
 }
 
+.tip {
+  position: relative;
+  cursor: help;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--text-quaternary);
+  text-underline-offset: 3px;
+  outline: none;
+}
+.tip[data-tip]:hover::after,
+.tip[data-tip]:focus::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 50;
+  width: max-content;
+  max-width: 300px;
+  white-space: normal;
+  text-decoration: none;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
 .usage-bar {
   display: flex;
   height: 12px;

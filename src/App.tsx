@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   BarChart,
   Callout,
@@ -37,6 +37,7 @@ type Params = {
   adults: number;
   k401: number;
   savings: number;
+  retireAge: number;
   status: Status;
   strategy: Strategy;
   rule55: boolean;
@@ -635,6 +636,7 @@ const DEFAULT_PARAMS: Params = {
   adults: 1,
   k401: 375000,
   savings: 0,
+  retireAge: 58,
   status: "single",
   strategy: "lump",
   rule55: true,
@@ -869,7 +871,8 @@ const FED: Record<Status, { std: number; brackets: Array<[number, number]> }> = 
   },
 };
 
-const START_AGE = 58;
+const startAge = (p: { retireAge?: number }) => Math.min(75, Math.max(40, Math.round(p.retireAge ?? 58)));
+const rule55Applies = (p: Params) => p.rule55 && startAge(p) >= 55;
 const END_AGE = 95;
 
 function fedTax(income: number, status: Status, age: number): number {
@@ -892,13 +895,13 @@ function stateTax(w: number, p: Params): number {
 function taxOnWithdrawal(w: number, p: Params, age: number, inTexas = false) {
   const fed = fedTax(w, p.status, age);
   const ok = inTexas ? 0 : stateTax(w, p);
-  const penalty = !p.rule55 && age < 59.5 ? 0.1 * w : 0;
+  const penalty = !rule55Applies(p) && age < 59.5 ? 0.1 * w : 0;
   return { fed, ok, penalty, total: fed + ok + penalty };
 }
 
 function lumpSumTax(p: Params) {
   const parts = p.strategy === "split" ? 2 : 1;
-  const one = taxOnWithdrawal(p.k401 / parts, p, START_AGE, p.txMove);
+  const one = taxOnWithdrawal(p.k401 / parts, p, startAge(p), p.txMove);
   return { fed: one.fed * parts, ok: one.ok * parts, penalty: one.penalty * parts, total: one.total * parts };
 }
 
@@ -979,8 +982,8 @@ function simulate(
     cash = 0;
   }
 
-  for (let age = START_AGE; age <= END_AGE; age++) {
-    const t = age - START_AGE;
+  for (let age = startAge(p); age <= END_AGE; age++) {
+    const t = age - startAge(p);
     if (collapseAge !== null && age >= collapseAge) {
       if (stranded === null) stranded = Math.max(0, balance + cash);
       balances.push(Math.max(0, balance + cash));
@@ -1060,16 +1063,111 @@ function NumField({
   );
 }
 
-function Field({ label, children }: { label: string; children: Parameters<typeof Row>[0]["children"] }) {
+const TIPS: Record<string, string> = {
+  State:
+    "Where you'll buy. Sets the land price, property tax, heating, game, state income tax and every state-specific note. Your other edits stay.",
+  "Acres you're buying":
+    "Size of the property. Land cost is acres × the state's price per acre (edit that under Estimates), or the listing price if you used one from Land search.",
+  "Adults in household":
+    "People living there. Groceries, health insurance, Medicare, out-of-pocket medical and household costs are per person. Two or more adults switches filing status to married, joint.",
+  "Retirement age":
+    "The age you leave your job and the plan starts. The Rule of 55 needs you to be 55 or older that year. Medicare still starts at 65, and Social Security no earlier than 62.",
+  "Year you retire": "The calendar year the plan starts. It times the Social Security cut scenario.",
+  "401(k) balance":
+    "Your pre-tax 401(k) or traditional IRA balance. Every dollar you take out is taxed as ordinary income in the year you take it.",
+  "Other savings (cash, brokerage, Roth)":
+    "Money outside the 401(k): bank accounts, a brokerage account, a Roth IRA. With \"As needed\" withdrawals the plan spends this first because it comes out tax-free.",
+  "Filing status":
+    "Single or married filing jointly. It sets the federal tax brackets and standard deduction.",
+  Withdrawal:
+    "All at once: take the whole 401(k) in year one and pay tax on it in one high-bracket year. Split: half in December, half in January, so two lower-bracket years. As needed: take only what you spend each year, which costs the least tax and keeps ACA subsidies.",
+  "First withdrawal while a Texas resident":
+    "Take the year-one withdrawal before you move. Texas has no income tax, and other states can't tax retirement income paid to a non-resident.",
+  "Rule of 55 (no 10% penalty)":
+    "Leave your job in or after the year you turn 55 and you can withdraw from that employer's 401(k) without the 10% early-withdrawal penalty. Income tax still applies. Rolling it to an IRA first loses this until 59½.",
+  "Seller-finance the land":
+    "The seller acts as the bank: you put money down and pay them yearly. It spreads the land cost out so less of it lands in one big taxable withdrawal year.",
+  "Down payment, %": "Share of the land price paid up front. Rural sellers typically ask 10–20%.",
+  "Interest rate, %": "Seller-financed land typically runs 6–9%.",
+  "Loan length, years": "Typical seller financing is 5–15 years, sometimes with a balloon payment due early.",
+  "Social Security, $/mo":
+    "Your estimated monthly benefit at the claiming age below. Get your real figure from your my Social Security account at ssa.gov.",
+  "Social Security, $/mo combined":
+    "Combined monthly benefit for the household at the claiming age below. Get real figures from my Social Security at ssa.gov.",
+  "Claim Social Security at age":
+    "62 is the earliest, at about 70% of your full benefit. Full benefit is at 67 for anyone born in 1960 or later. Waiting until 70 pays about 124%.",
+  "Part-time income, $/yr": "Any work income after you retire, counted until the age below.",
+  "Part-time work until age": "The last age the part-time income is counted.",
+  "Return on savings, %":
+    "Yearly growth on money still invested, before inflation. 4% is a conservative stock-and-bond mix.",
+  "Inflation, %": "How fast living costs rise each year. Social Security rises with it (COLA).",
+  "Contingency on costs, %":
+    "A cushion added on top of all yearly living costs for surprises. Set it to 0 if your numbers already include one.",
+  "Full-price ACA insurance (no subsidy), $/yr per person":
+    "ACA is Affordable Care Act marketplace insurance (healthcare.gov), the usual coverage before Medicare at 65. Subsidies cut the premium based on your income. \"Unsubsidized\" is the full price you pay in a year your income is too high for a subsidy, such as a big 401(k) withdrawal year. About $11,000 a year for a 58-year-old's silver plan.",
+  "Collapse happens at age":
+    "For the failed-state scenario: the age when bills, Social Security and the value of money all stop.",
+  "Power setup":
+    "How the land gets electricity: a co-op grid line, grid plus solar and battery, or fully off-grid. It changes setup costs and the yearly power bill.",
+  "Heat with":
+    "Propane, a wood stove with propane backup, or wood only. Wood is far cheaper if you cut it yourself, but it's real work.",
+  "Include collapse-hardening build":
+    "Adds the grid-down items: hand pump, solar, cabin and wood stove, food storage, garden, rain catchment, medical and radios.",
+  "Hunt for meat": "Counts hunting gear costs and subtracts the meat you take from the grocery bill.",
+  "Elk taken per year": "Where elk live, one elk is about four deer's worth of meat.",
+  "Deer taken per year": "Each deer is about 45 lb of boneless meat (editable under Estimates).",
+  "Hogs taken per year": "Feral hogs, where they exist. Each gives meat plus lard, the fat lean venison lacks.",
+  "Store meat value, $/lb": "What the meat would cost at the store, used to value the grocery savings.",
+  "Propane, $/gal": "What you pay per gallon delivered to your own tank.",
+  "Firewood you cut, $/cord": "Saw gas, chains and bar oil per cord when you cut your own.",
+  "Firewood bought, $/cord": "Price per cord of split firewood where your land has few trees.",
+  "Social Security cut starts in": "The year a trust-fund shortfall would cut benefits if Congress does nothing.",
+  "Benefits paid after the cut, %": "Share of promised benefits still paid after the cut. Trustees project roughly 77–81%.",
+  "High-inflation scenario, %": "The inflation rate used for the \"High inflation\" chart line.",
+};
+
+function Tip({ text, children }: { text: string; children: ReactNode }) {
+  return (
+    <span className="tip" tabIndex={0} data-tip={text}>
+      {children}
+    </span>
+  );
+}
+
+function Field({
+  label,
+  tip,
+  children,
+}: {
+  label: string;
+  tip?: string;
+  children: Parameters<typeof Row>[0]["children"];
+}) {
+  const text = tip ?? TIPS[label] ?? (label.startsWith("Social Security cut to") ? TIPS.ssCutToggle : undefined);
   return (
     <Row gap={8} align="center" justify="space-between">
       <Text size="small" tone="secondary">
-        {label}
+        {text ? <Tip text={text}>{label}</Tip> : label}
       </Text>
       {children}
     </Row>
   );
 }
+
+const REC_TIPS: Record<string, string> = {
+  aca: "ACA marketplace health insurance (healthcare.gov) before Medicare. This is the subsidized price in low-income years. In a year your income passes 400% of the poverty line, the plan uses the full price from Assumptions instead.",
+  medicare: "From 65: Medicare Part B premium, a Medigap Plan G supplement and a Part D drug plan. A $0-premium Medicare Advantage plan costs less but limits your doctors.",
+  oop: "What insurance doesn't cover: dental, glasses, prescription copays.",
+  liability: "Covers someone getting hurt on your land, plus the barn and outbuildings.",
+  rvins: "A full-timer policy, which covers the RV as your home with liability, unlike a recreational RV policy.",
+  rvreserve: "Money set aside each year to replace the RV when it wears out, typically every 10–15 years.",
+  sos: "Satellite messenger subscription (Garmin inReach or similar) so you can call for help with no cell signal.",
+  maint: "Repairs on the RV, tractor, chainsaw, generator and truck.",
+  proptax: "County property tax on the land and anything permanent you build.",
+};
+
+TIPS.ssCutToggle =
+  "Applies the Social Security cut scenario to the whole plan. Off, it's still shown as a separate line on the chart.";
 
 export type { StateId };
 export { STATES, STATE_IDS };
@@ -1083,11 +1181,15 @@ function readStored<T extends object>(key: string, defaults: T): T {
   }
 }
 
-export function loadListingIntoPlan(state: StateId | null, price: number) {
+export function loadListingIntoPlan(state: StateId | null, price: number, acres: number) {
   let p = readStored<Params>("params-v2", DEFAULT_PARAMS);
   let up = readStored<Record<string, number>>("upfront-v2", PRESET_PLANNED);
   let rec = readStored<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
   EST = mergeEst(readStored<Partial<Estimates>>("estimates-v1", {}));
+  if (acres > 0) {
+    EST = { ...EST, acres };
+    localStorage.setItem("retreat-planner:estimates-v1", JSON.stringify(EST));
+  }
   if (state && STATES[state]) [p, up, rec] = applyState(state, p, up, rec);
   up = { ...up, land: Math.round(price) };
   localStorage.setItem("retreat-planner:params-v2", JSON.stringify(p));
@@ -1230,7 +1332,7 @@ export default function RetreatPlan() {
   const cashSim = simulate({ ...p, finance: false }, rec, upfrontTotal, p.inflation, null, land);
   const financedSim = simulate({ ...p, finance: true }, rec, upfrontTotal, p.inflation, null, land);
   const loanIfOn = loanTerms({ ...p, finance: true }, land);
-  const ssCutYearAge = START_AGE + (EST.ssCutYear - p.startYear);
+  const ssCutYearAge = startAge(p) + (EST.ssCutYear - p.startYear);
 
   const lumpTax = lumpSumTax(p);
   const lumpTaxAfterMove = lumpSumTax({ ...p, txMove: false });
@@ -1250,7 +1352,7 @@ export default function RetreatPlan() {
   const ssAnnual = p.ssMonthly * 12;
 
   const ages: string[] = [];
-  for (let a = START_AGE; a <= END_AGE; a++) ages.push(String(a));
+  for (let a = startAge(p); a <= END_AGE; a++) ages.push(String(a));
 
   const lastsLabel = (r: SimResult) => (r.depletedAge === null ? `${END_AGE}+` : String(r.depletedAge));
   const shortfall = normal.depletedAge !== null && normal.depletedAge < 85;
@@ -1266,7 +1368,13 @@ export default function RetreatPlan() {
     (i) => (i.id !== "firewood" || heat !== "propane" || (rec.firewood ?? 0) > 0) && (i.id !== "hunt" || p.hunting),
   );
   const costRows = shownRecurring.map((item) => [
-    recLabel(item),
+    REC_TIPS[item.id] ? (
+      <span key={`${item.id}-l`} className="tip" title={REC_TIPS[item.id]}>
+        {recLabel(item)}
+      </span>
+    ) : (
+      recLabel(item)
+    ),
     <NumField
       key={`${item.id}-mo`}
       value={Math.round((rec[item.id] ?? 0) / 12)}
@@ -1310,9 +1418,9 @@ export default function RetreatPlan() {
   return (
     <Stack gap={24} style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
       <Stack gap={6}>
-        <H1>{st.name} {EST.acres}-acre retreat: retirement cash plan</H1>
+        <H1>{st.name} land retreat: retirement cash plan</H1>
         <Text tone="secondary">
-          Household of {who}, retiring at 58, living in an RV on {EST.acres} acres with a water source in {st.region}. Costs
+          Household of {who}, retiring at {startAge(p)} in {p.startYear}, living in an RV on {EST.acres} acres with a water source in {st.region}. Costs
           marked "per person" scale with the household size in Assumptions. Every number with a box is editable, and
           the charts recompute as you type. Taxes use 2026 federal brackets plus {st.name} state tax (
           {st.taxNote})
@@ -1358,6 +1466,9 @@ export default function RetreatPlan() {
                   options={STATE_IDS.map((id) => ({ value: id, label: STATES[id].name }))}
                 />
               </Field>
+              <Field label="Acres you're buying">
+                <NumField value={est.acres} onChange={(n) => setEst("acres", n)} width={72} />
+              </Field>
               <Field label="Adults in household">
                 <NumField
                   value={adults}
@@ -1370,6 +1481,12 @@ export default function RetreatPlan() {
                   }
                   width={64}
                 />
+              </Field>
+              <Field label="Retirement age">
+                <NumField value={p.retireAge ?? 58} onChange={(n) => set("retireAge", n)} width={64} />
+              </Field>
+              <Field label="Year you retire">
+                <NumField value={p.startYear} onChange={(n) => set("startYear", n)} width={72} />
               </Field>
               <Field label="401(k) balance">
                 <NumField value={p.k401} onChange={(n) => set("k401", n)} />
@@ -1404,6 +1521,12 @@ export default function RetreatPlan() {
               <Field label="Rule of 55 (no 10% penalty)">
                 <Toggle checked={p.rule55} onChange={(v) => set("rule55", v)} />
               </Field>
+              {p.rule55 && !rule55Applies(p) && (
+                <Text size="small" tone="tertiary">
+                  The Rule of 55 needs you to leave the job in or after the year you turn 55, so it's off at{" "}
+                  {startAge(p)}. Withdrawals before 59½ pay the 10% penalty.
+                </Text>
+              )}
               <Field label="Seller-finance the land">
                 <Toggle checked={p.finance} onChange={(v) => set("finance", v)} />
               </Field>
@@ -1433,9 +1556,6 @@ export default function RetreatPlan() {
               <Field label="Part-time work until age">
                 <NumField value={p.otherUntil} onChange={(n) => set("otherUntil", n)} width={64} />
               </Field>
-              <Field label="Year you retire (age 58)">
-                <NumField value={p.startYear} onChange={(n) => set("startYear", n)} width={72} />
-              </Field>
               <Field label={`Social Security cut to ${EST.ssCutPct}% from ${EST.ssCutYear}`}>
                 <Toggle checked={p.ssCut} onChange={(v) => set("ssCut", v)} />
               </Field>
@@ -1449,7 +1569,7 @@ export default function RetreatPlan() {
               <Field label="Contingency on costs, %">
                 <NumField value={p.contingency} onChange={(n) => set("contingency", n)} width={64} />
               </Field>
-              <Field label="Unsubsidized ACA, $/yr per person">
+              <Field label="Full-price ACA insurance (no subsidy), $/yr per person">
                 <NumField value={p.acaUnsub} onChange={(n) => set("acaUnsub", n)} />
               </Field>
               <Field label="Collapse happens at age">
@@ -1714,7 +1834,7 @@ export default function RetreatPlan() {
         <Row gap={16} wrap>
           {(
             [
-              ["red", `Taxes${p.rule55 ? "" : " + 10% penalty"}: ${money(allocTaxes)}`],
+              ["red", `Taxes${rule55Applies(p) || startAge(p) >= 60 ? "" : " + 10% penalty"}: ${money(allocTaxes)}`],
               ["blue", `Land + RV: ${money(landRv)}`],
               ["cyan", `Making it livable: ${money(allocOther)}`],
               ["purple", `Collapse hardening: ${money(allocHard)}`],
@@ -1886,7 +2006,7 @@ export default function RetreatPlan() {
             <Callout tone="warning" title="Health insurance is the swing cost">
               ACA subsidies are based on income. In any year you withdraw more than about {money(acaCliff(p))} (400%
               of the poverty line for {peopleLabel(adultsOf(p))}), you lose the subsidy and pay full price, modeled here
-              as {money(p.acaUnsub)}/yr per person at 58. {loc.medicaid}.
+              as {money(p.acaUnsub)}/yr per person at {startAge(p)}. {loc.medicaid}.
               {st.medicaid
                 ? " Starting in 2027, federal law adds work or volunteer requirements for expansion adults under 65."
                 : ""}{" "}
@@ -2128,7 +2248,7 @@ export default function RetreatPlan() {
             ["Drinking + hygiene water", `~${(1825 * adults).toLocaleString("en-US")} gal (5 gal/person/day)`, "Hand pump on the well covers this easily", "Electric pump without hand-pump backup"],
             ["Garden water", "~100–140K gal per summer for ¼ acre", `Pond, creek, rain catchment (a 1,000 sq ft roof yields ~${(Math.round((parseFloat(st.rain) * 1000 * 0.62 * 0.8) / 1000) || 0).toLocaleString("en-US")}K gal/yr with ${st.rain} of rain)`, "Drought years dry up ponds and shallow wells"],
             ["Heat", `~${sEst(stateOf(p)).propaneGal.toLocaleString("en-US")} gal propane, or ~${sEst(stateOf(p)).cords} cords of wood`, `Stored propane lasts 1–2 winters. ${loc.woodNote}`, st.winterShelter > 0 ? `Winters reach ${st.winterLow}. Losing heat is deadly within hours` : "RVs heat poorly. Ice storms are the real killer"],
-            ["Medicine", "Every prescription you take, plus dental", "Stockpile what your doctor will allow, get dental work done early, learn first aid", "The largest risk at 58+. You can't grow it"],
+            ["Medicine", "Every prescription you take, plus dental", "Stockpile what your doctor will allow, get dental work done early, learn first aid", "The largest risk past 55. You can't grow it"],
             ["Cooling", loc.summerHigh, "Shade, fans on solar, a cabin with an earth-sheltered side", "RV A/C can't run on a modest solar bank"],
           ]}
         />

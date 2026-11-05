@@ -107,13 +107,20 @@ function searchLinks(c: Criteria, county: string | null) {
   const t = PROP_TYPES[c.type];
   const place = county ? `${slug(county)}-county-${slug(st.name)}` : slug(st.name);
   const lcPlace = county ? `${title(county)}-County-${code}` : st.name.replace(/\s+/g, "-");
+  const lo = Math.max(0, Math.round(c.acresMin));
+  const hi = Math.max(0, Math.round(c.acresMax));
   const price = c.priceMax > 0 ? `under-${Math.round(c.priceMax)}/` : "";
+  const lcAcres =
+    lo > 0 && hi > lo ? `${lo}-${hi}-acres/` : lo > 0 ? `over-${lo}-acres/` : hi > 0 ? `under-${hi}-acres/` : "";
+  const lwAcres =
+    lo > 0 && hi > lo ? `/acres-${lo}-${hi}` : lo > 0 ? `/acres-over-${lo}` : hi > 0 ? `/acres-under-${hi}` : "";
+  const lwPrice = c.priceMax > 0 ? `/price-under-${Math.round(c.priceMax)}` : "";
   const where = county ? `"${county} County" ${code}` : st.name;
-  const google = `${where} land for sale ${c.acresMin}-${c.acresMax} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
+  const google = `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
   return [
-    { site: "LandWatch", url: `https://www.landwatch.com/${place}-${t.lw}-for-sale` },
-    { site: "Land.com", url: `https://www.land.com/${lcPlace}/${t.lc}/${price}` },
-    { site: "Lands of America", url: `https://www.landsofamerica.com/${lcPlace}/${t.lc}/${price}` },
+    { site: "LandWatch", url: `https://www.landwatch.com/${place}-${t.lw}-for-sale${lwAcres}${lwPrice}` },
+    { site: "Land.com", url: `https://www.land.com/${lcPlace}/${t.lc}/${lcAcres}${price}` },
+    { site: "Lands of America", url: `https://www.landsofamerica.com/${lcPlace}/${t.lc}/${lcAcres}${price}` },
     { site: "Zillow (land)", url: county ? `https://www.zillow.com/${slug(county)}-county-${code.toLowerCase()}/land/` : `https://www.zillow.com/${code.toLowerCase()}/land/` },
     { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
   ];
@@ -201,7 +208,11 @@ function Num({ value, onChange, width = 90 }: { value: number; onChange: (n: num
 
 const EMPTY_FORM = { name: "", url: "", price: "", acres: "", where: "", notes: "" };
 
-export default function LandSearch({ onUseInPlan }: { onUseInPlan: (state: StateId | null, price: number) => void }) {
+export default function LandSearch({
+  onUseInPlan,
+}: {
+  onUseInPlan: (state: StateId | null, price: number, acres: number) => void;
+}) {
   const [storedC, setC] = useCanvasState<Criteria>("land-criteria-v1", DEFAULT_CRITERIA);
   const c: Criteria = { ...DEFAULT_CRITERIA, ...storedC };
   const [listings, setListings] = useCanvasState<Listing[]>("land-listings-v1", []);
@@ -359,10 +370,10 @@ export default function LandSearch({ onUseInPlan }: { onUseInPlan: (state: State
         <Stack gap={12}>
           <H2>1. Search the listing sites</H2>
           <Text tone="secondary">
-            Each button opens that site in your browser, filtered to the county and property type
-            {c.priceMax > 0 ? `, and to under ${money(c.priceMax)} on Land.com and Lands of America` : ""}. Set{" "}
-            {c.acresMin}–{c.acresMax} acres (and price on LandWatch and Zillow) in the site's own filters. Save the
-            search on the site to get new listings by email.
+            Each button opens that site in your browser, filtered to the county, property type, {c.acresMin}–
+            {c.acresMax} acres{c.priceMax > 0 ? ` and under ${money(c.priceMax)}` : ""} on LandWatch, Land.com and
+            Lands of America. Zillow opens to the county's land listings, so set acres and price in its own filters.
+            If a site ever opens without the acreage applied, set it in the site's Acres filter. Save the search on the site to get new listings by email.
           </Text>
           <Table headers={["Where", "Open search"]} rows={linkRows} />
           <Callout tone="neutral" title="Why the app doesn't scrape the sites">
@@ -459,7 +470,7 @@ export default function LandSearch({ onUseInPlan }: { onUseInPlan: (state: State
                   <Pill size="sm" onClick={() => void check(l)}>
                     {busy[l.id] ? "Checking…" : "Recheck"}
                   </Pill>
-                  <Pill size="sm" onClick={() => onUseInPlan(planState(l), l.price)}>
+                  <Pill size="sm" onClick={() => onUseInPlan(planState(l), l.price, l.acres)}>
                     Use in plan
                   </Pill>
                   <Pill size="sm" onClick={() => remove(l.id)}>
@@ -502,9 +513,9 @@ export default function LandSearch({ onUseInPlan }: { onUseInPlan: (state: State
               </Callout>
             )}
             <Text size="small" tone="tertiary">
-              "Use in plan" sets the retirement plan's land cost to {money(selected.price)}
-              {planState(selected) ? ` and switches the plan to ${STATES[planState(selected)!].name}` : ""}. The plan
-              still assumes 50 acres for property tax and upkeep. Distances to the hospital and town are straight-line,
+              "Use in plan" sets the retirement plan's land cost to {money(selected.price)} and its acreage to{" "}
+              {selected.acres}
+              {planState(selected) ? `, and switches the plan to ${STATES[planState(selected)!].name}` : ""}. Distances to the hospital and town are straight-line,
               so expect 1.3–1.5× that by road. The checks use the pin as the center of the property. Walk the land and
               check the county parcel map before you trust any of it. Property radius at {selected.acres} acres: about{" "}
               {fmtDist(propertyRadiusM(selected.acres))}.
