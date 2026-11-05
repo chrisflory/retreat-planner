@@ -36,6 +36,7 @@ const isLump = (p: { strategy: Strategy }) => p.strategy !== "asNeeded";
 type Params = {
   adults: number;
   k401: number;
+  savings: number;
   status: Status;
   strategy: Strategy;
   rule55: boolean;
@@ -633,6 +634,7 @@ function applyState(
 const DEFAULT_PARAMS: Params = {
   adults: 1,
   k401: 375000,
+  savings: 0,
   status: "single",
   strategy: "lump",
   rule55: true,
@@ -934,6 +936,7 @@ type SimResult = {
   year0Gross: number;
   year0Tax: number;
   year0Cost: number;
+  year0FromSavings: number;
   stranded: number | null;
 };
 
@@ -960,9 +963,11 @@ function simulate(
   const inf = inflationPct / 100;
   const cliff = acaCliff(p);
   let balance = p.k401;
+  let cash = Math.max(0, p.savings ?? 0);
   let year0Gross = 0;
   let year0Tax = 0;
   let year0Cost = 0;
+  let year0FromSavings = 0;
   let depletedAge: number | null = null;
   let stranded: number | null = null;
   const balances: number[] = [];
@@ -970,14 +975,15 @@ function simulate(
   if (isLump(p)) {
     year0Gross = p.k401;
     year0Tax = lumpSumTax(p).total;
-    balance = p.k401 - year0Tax;
+    balance = p.k401 - year0Tax + cash;
+    cash = 0;
   }
 
   for (let age = START_AGE; age <= END_AGE; age++) {
     const t = age - START_AGE;
     if (collapseAge !== null && age >= collapseAge) {
-      if (stranded === null) stranded = Math.max(0, balance);
-      balances.push(Math.max(0, balance));
+      if (stranded === null) stranded = Math.max(0, balance + cash);
+      balances.push(Math.max(0, balance + cash));
       continue;
     }
     const f = Math.pow(1 + inf, t);
@@ -993,25 +999,33 @@ function simulate(
       const after = balance - (cost - income + extra);
       balance = after > 0 ? after * (1 + r) : after;
     } else {
-      let need = annualCost(rec, age, p, false) * f - income + extra;
       const inTexas = t === 0 && p.txMove;
-      let w = need > 0 ? grossUp(need, p, age, inTexas) : 0;
-      if (w > cliff) {
-        need = annualCost(rec, age, p, true) * f - income + extra;
-        w = grossUp(need, p, age, inTexas);
-      }
+      const plan = (unsub: boolean) => {
+        const gross = annualCost(rec, age, p, unsub) * f - income + extra;
+        const fromCash = Math.min(cash, Math.max(0, gross));
+        const need = gross - fromCash;
+        const w = need > 0 && balance > 0 ? grossUp(need, p, age, inTexas) : 0;
+        return { gross, fromCash, need, w };
+      };
+      let s = plan(false);
+      if (s.w > cliff) s = plan(true);
       if (t === 0) {
-        year0Gross = w;
-        year0Tax = w - need;
-        year0Cost = need + income - extra;
+        year0Gross = s.w;
+        year0Tax = s.w > 0 ? s.w - s.need : 0;
+        year0Cost = s.gross + income - extra;
+        year0FromSavings = s.fromCash;
       }
-      const after = balance - w;
+      cash -= s.fromCash;
+      if (s.gross < 0) cash += -s.gross;
+      const after = balance - (balance > 0 ? s.w : Math.max(0, s.need));
       balance = after > 0 ? after * (1 + r) : after;
+      cash *= 1 + r;
     }
-    if (balance <= 0 && depletedAge === null) depletedAge = age;
-    balances.push(balance);
+    const total = balance + cash;
+    if (total <= 0 && depletedAge === null) depletedAge = age;
+    balances.push(total);
   }
-  return { balances, depletedAge, year0Gross, year0Tax, year0Cost, stranded };
+  return { balances, depletedAge, year0Gross, year0Tax, year0Cost, year0FromSavings, stranded };
 }
 
 const money = (n: number) =>
@@ -1223,8 +1237,12 @@ export default function RetreatPlan() {
   const lumpTaxOneYear = lumpSumTax({ ...p, strategy: "lump", txMove: true });
   const lumpTaxSplit = lumpSumTax({ ...p, strategy: "split", txMove: true });
   const withheld = 0.2 * p.k401;
-  const netAfterTax = normal.year0Gross > 0 && isLump(p) ? p.k401 - normal.year0Tax : p.k401;
-  const leftAfterSetup = isLump(p) ? netAfterTax - (upfrontTotal - loan.financed) : p.k401 - normal.year0Gross;
+  const savings = Math.max(0, p.savings ?? 0);
+  const netAfterTax = (isLump(p) ? p.k401 - normal.year0Tax : p.k401) + savings;
+  const leftAfterSetup = isLump(p)
+    ? netAfterTax - (upfrontTotal - loan.financed)
+    : p.k401 - normal.year0Gross + savings - normal.year0FromSavings;
+  const noSavingsSim = savings > 0 ? simulate({ ...p, savings: 0 }, rec, upfrontTotal, p.inflation, null, land) : normal;
   const pm = POWER[p.powerMode] ?? POWER.grid;
 
   const steadyPre65 = annualCost(rec, 60, p, false);
@@ -1238,10 +1256,11 @@ export default function RetreatPlan() {
   const shortfall = normal.depletedAge !== null && normal.depletedAge < 85;
 
   const allocTaxes = normal.year0Tax;
-  const allocOther = coreTotal - landRv;
+  const allocOther = coreTotal - land - (up.rv ?? 0);
   const allocHard = p.hardening ? hardTotal : 0;
   const allocHunt = p.hunting ? huntTotal : 0;
-  const allocRemaining = Math.max(0, p.k401 - allocTaxes - landRv - allocOther - allocHard - allocHunt);
+  const allocTotal = p.k401 + savings;
+  const allocRemaining = Math.max(0, allocTotal - allocTaxes - landRv - allocOther - allocHard - allocHunt);
 
   const shownRecurring = RECURRING.filter(
     (i) => (i.id !== "firewood" || heat !== "propane" || (rec.firewood ?? 0) > 0) && (i.id !== "hunt" || p.hunting),
@@ -1318,7 +1337,10 @@ export default function RetreatPlan() {
       </Callout>
 
       <Grid columns={4} gap={16}>
-        <Stat value={kMoney(netAfterTax)} label={isLump(p) ? "Cash after lump-sum tax" : "Kept in 401(k)/IRA"} />
+        <Stat
+          value={kMoney(netAfterTax)}
+          label={`${isLump(p) ? "Cash after lump-sum tax" : "Kept in 401(k)/IRA"}${savings > 0 ? `, incl. ${kMoney(savings)} savings` : ""}`}
+        />
         <Stat value={kMoney(upfrontTotal)} label="One-time setup (land, RV, build-out)" />
         <Stat value={kMoney(leftAfterSetup)} label={isLump(p) ? "Left after setup, before living costs" : "Left in account after year 1"} tone={leftAfterSetup < 100000 ? "warning" : undefined} />
         <Stat value={`${money(steadyPre65 / 12)}/mo`} label={`Living cost before 65 (${money(steadyPre65)}/yr), today's dollars`} />
@@ -1351,6 +1373,9 @@ export default function RetreatPlan() {
               </Field>
               <Field label="401(k) balance">
                 <NumField value={p.k401} onChange={(n) => set("k401", n)} />
+              </Field>
+              <Field label="Other savings (cash, brokerage, Roth)">
+                <NumField value={p.savings ?? 0} onChange={(n) => set("savings", n)} />
               </Field>
               <Field label="Filing status">
                 <Select
@@ -1497,7 +1522,8 @@ export default function RetreatPlan() {
             height={300}
           />
           <Text size="small" tone="tertiary">
-            X-axis: age. Y-axis: {isLump(p) ? "cash on hand after tax" : "pre-tax 401(k)/IRA balance"}, in
+            X-axis: age. Y-axis: {isLump(p) ? "cash on hand after tax" : "pre-tax 401(k)/IRA balance"}
+            {savings > 0 ? " plus other savings" : ""}, in
             nominal dollars. Below $0 is the running shortfall: money you'd have to find somewhere else. Model:
             spending inflates yearly, Social Security gets matching COLAs, savings earn the return rate. Tax on
             interest is ignored.
@@ -1514,6 +1540,16 @@ export default function RetreatPlan() {
             Third, click "Lean build". Fourth, enter your real Social Security figure from ssa.gov. The $1,400/mo
             default is a placeholder estimate for one person claiming at 62. Use roughly $2,000 combined for a couple
             where one spouse claims a spousal benefit.
+          </Callout>
+          <Callout tone={savings > 0 ? "success" : "neutral"} title="Other savings">
+            {savings > 0
+              ? isLump(p)
+                ? `Your ${money(savings)} of savings is added to the cash on hand. It lasts to age ${lastsLabel(normal)} with the savings and ${lastsLabel(noSavingsSim)} without. With "All at once" or "Split" withdrawals the whole 401(k) is taxed anyway, so savings can't lower that tax. "As needed" spends the savings first, which shrinks the year-one taxable withdrawal.`
+                : `The plan spends your ${money(savings)} of savings before touching the 401(k). Savings come out tax-free, so the year-one 401(k) withdrawal drops and so does its tax (${kMoney(normal.year0Tax)} vs ${kMoney(noSavingsSim.year0Tax)} without savings). Lower reported income also helps you keep ACA subsidies. Money lasts to age ${lastsLabel(normal)} with the savings and ${lastsLabel(noSavingsSim)} without.`
+              : 'Enter cash, bank, brokerage or Roth IRA money in "Other savings" under Assumptions.'}{" "}
+            Roth IRA contributions come out tax- and penalty-free at any age, but Roth earnings taken before 59½ are
+            taxed and penalized. In a brokerage account only the gains are taxable, usually at 0% long-term capital
+            gains rates at this income. Both are treated as tax-free here.
           </Callout>
         </Stack>
       </Grid>
@@ -1657,10 +1693,14 @@ export default function RetreatPlan() {
       </Stack>
 
       <Stack gap={10}>
-        <H2>Where the 401(k) goes</H2>
+        <H2>Where the {savings > 0 ? "401(k) and savings go" : "401(k) goes"}</H2>
         <UsageBar
-          total={p.k401}
-          topLeftLabel={<Text size="small" tone="secondary">{money(p.k401)} gross 401(k)</Text>}
+          total={allocTotal}
+          topLeftLabel={
+            <Text size="small" tone="secondary">
+              {money(p.k401)} gross 401(k){savings > 0 ? ` + ${money(savings)} savings` : ""}
+            </Text>
+          }
           topRightLabel={<Text size="small" tone="secondary">{money(allocRemaining)} left to live on</Text>}
           segments={[
             { id: "tax", value: allocTaxes, color: "red" },
