@@ -60,6 +60,9 @@ type Params = {
   state: StateId;
   txMove: boolean;
   startYear: number;
+  jobPay: number;
+  jobContrib: number;
+  jobSave: number;
   ssCut: boolean;
   finance: boolean;
   downPct: number;
@@ -660,6 +663,9 @@ const DEFAULT_PARAMS: Params = {
   state: "OK",
   txMove: true,
   startYear: 2027,
+  jobPay: 0,
+  jobContrib: 0,
+  jobSave: 0,
   ssCut: false,
   finance: false,
   downPct: 20,
@@ -876,6 +882,25 @@ const FED: Record<Status, { std: number; brackets: Array<[number, number]> }> = 
 const startAge = (p: { retireAge?: number }) => Math.min(75, Math.max(40, Math.round(p.retireAge ?? 58)));
 const rule55Applies = (p: Params) => p.rule55 && startAge(p) >= 55;
 const END_AGE = 95;
+const THIS_YEAR = new Date().getFullYear();
+
+function yearsToRetire(p: { startYear?: number }) {
+  return Math.max(0, Math.round(p.startYear ?? THIS_YEAR) - THIS_YEAR);
+}
+
+function nestEgg(p: Params) {
+  const years = yearsToRetire(p);
+  const r = (p.ret ?? 0) / 100;
+  let k401 = Math.max(0, p.k401);
+  let savings = Math.max(0, p.savings ?? 0);
+  const contrib = Math.max(0, p.jobContrib ?? 0);
+  const save = Math.max(0, p.jobSave ?? 0);
+  for (let i = 0; i < years; i++) {
+    k401 = k401 * (1 + r) + contrib;
+    savings = savings * (1 + r) + save;
+  }
+  return { years, k401, savings, contrib, save };
+}
 const goalOf = (p: Params) => Math.min(END_AGE, Math.max(startAge(p) + 1, Math.round(p.goalAge ?? 85)));
 
 function fedTax(income: number, status: Status, age: number): number {
@@ -971,8 +996,9 @@ function simulate(
   const r = p.ret / 100;
   const inf = inflationPct / 100;
   const cliff = acaCliff(p);
-  let balance = p.k401;
-  let cash = Math.max(0, p.savings ?? 0);
+  const egg = nestEgg(p);
+  let balance = egg.k401;
+  let cash = egg.savings;
   let year0Gross = 0;
   let year0Tax = 0;
   let year0Cost = 0;
@@ -982,9 +1008,9 @@ function simulate(
   const balances: number[] = [];
 
   if (isLump(p)) {
-    year0Gross = p.k401;
-    year0Tax = lumpSumTax(p).total;
-    balance = p.k401 - year0Tax + cash;
+    year0Gross = egg.k401;
+    year0Tax = lumpSumTax({ ...p, k401: egg.k401 }).total;
+    balance = egg.k401 - year0Tax + cash;
     cash = 0;
   }
 
@@ -1099,9 +1125,15 @@ const TIPS: Record<string, string> = {
     "The age you leave your job and the plan starts. The Rule of 55 needs you to be 55 or older that year. Medicare still starts at 65, and Social Security no earlier than 62.",
   "Money needs to last through age":
     "The age you still want money left. The plan then shows the monthly spending cut, or the extra yearly income, that gets you there with everything else unchanged.",
-  "Year you retire": "The calendar year the plan starts. It times the Social Security cut scenario.",
+  "Year you retire": "The calendar year the plan starts. Pay and contributions count for each year before this one, and it times the Social Security cut scenario.",
+  "Wages until you retire, $/yr":
+    "Gross pay from the job you still have, for each year before the retirement year. The part you don't contribute or save is your cost of living now and is not spent by the plan.",
+  "401(k) contribution, $/yr":
+    "Pre-tax amount added to the 401(k) each working year, including employer match. The 2026 employee limit is $23,500, or $31,000 at age 50 and older. Match can go above that.",
+  "Saved from wages, $/yr":
+    "After-tax dollars from pay that you put into other savings each working year. The plan spends these before the 401(k).",
   "401(k) balance":
-    "Your pre-tax 401(k) or traditional IRA balance. Every dollar you take out is taxed as ordinary income in the year you take it.",
+    "What the 401(k) or traditional IRA is worth today. It keeps growing, and contributions are added, until the year you retire. Every dollar you later take out is taxed as ordinary income.",
   "Other savings (cash, brokerage, Roth)":
     "Money outside the 401(k): bank accounts, a brokerage account, a Roth IRA. With \"As needed\" withdrawals the plan spends this first because it comes out tax-free.",
   "Filing status":
@@ -1330,7 +1362,7 @@ export default function RetreatPlan() {
       s: STATES[id],
       land: su.land ?? 0,
       total,
-      lumpStateTax: Math.round(lumpSumTax({ ...sp, txMove: false }).ok),
+      lumpStateTax: Math.round(lumpSumTax({ ...sp, k401: nestEgg(sp).k401, txMove: false }).ok),
       heating: (sr.propane ?? 0) + (sr.firewood ?? 0),
       cost: annualCost(sr, 60, sp, false),
       lasts: sim.depletedAge,
@@ -1361,17 +1393,21 @@ export default function RetreatPlan() {
   const loanIfOn = loanTerms({ ...p, finance: true }, land);
   const ssCutYearAge = startAge(p) + (EST.ssCutYear - p.startYear);
 
-  const lumpTax = lumpSumTax(p);
-  const lumpTaxAfterMove = lumpSumTax({ ...p, txMove: false });
-  const lumpTaxOneYear = lumpSumTax({ ...p, strategy: "lump", txMove: true });
-  const lumpTaxSplit = lumpSumTax({ ...p, strategy: "split", txMove: true });
-  const withheld = 0.2 * p.k401;
-  const savings = Math.max(0, p.savings ?? 0);
-  const netAfterTax = (isLump(p) ? p.k401 - normal.year0Tax : p.k401) + savings;
+  const egg = nestEgg(p);
+  const lumpTax = lumpSumTax({ ...p, k401: egg.k401 });
+  const lumpTaxAfterMove = lumpSumTax({ ...p, k401: egg.k401, txMove: false });
+  const lumpTaxOneYear = lumpSumTax({ ...p, k401: egg.k401, strategy: "lump", txMove: true });
+  const lumpTaxSplit = lumpSumTax({ ...p, k401: egg.k401, strategy: "split", txMove: true });
+  const withheld = 0.2 * egg.k401;
+  const savings = egg.savings;
+  const netAfterTax = (isLump(p) ? egg.k401 - normal.year0Tax : egg.k401) + savings;
   const leftAfterSetup = isLump(p)
     ? netAfterTax - (upfrontTotal - loan.financed)
-    : p.k401 - normal.year0Gross + savings - normal.year0FromSavings;
-  const noSavingsSim = savings > 0 ? simulate({ ...p, savings: 0 }, rec, upfrontTotal, p.inflation, null, land) : normal;
+    : egg.k401 - normal.year0Gross + savings - normal.year0FromSavings;
+  const noSavingsSim =
+    (p.savings ?? 0) > 0 || (p.jobSave ?? 0) > 0
+      ? simulate({ ...p, savings: 0, jobSave: 0 }, rec, upfrontTotal, p.inflation, null, land)
+      : normal;
   const pm = POWER[p.powerMode] ?? POWER.grid;
 
   const steadyPre65 = annualCost(rec, 60, p, false);
@@ -1401,7 +1437,7 @@ export default function RetreatPlan() {
   const allocOther = coreTotal - land - (up.rv ?? 0);
   const allocHard = p.hardening ? hardTotal : 0;
   const allocHunt = p.hunting ? huntTotal : 0;
-  const allocTotal = p.k401 + savings;
+  const allocTotal = egg.k401 + savings;
   const allocRemaining = Math.max(0, allocTotal - allocTaxes - landRv - allocOther - allocHard - allocHunt);
 
   const shownRecurring = RECURRING.filter(
@@ -1471,9 +1507,9 @@ export default function RetreatPlan() {
 
       <Callout tone={shortfall ? "danger" : "success"} title={`Normal economy: money lasts to age ${lastsLabel(normal)}`}>
         {p.strategy === "lump"
-          ? `Taking the full ${money(p.k401)} in one year costs about ${money(normal.year0Tax)} in tax, which is more than the RV. `
+          ? `Taking the full ${money(egg.k401)} in one year costs about ${money(normal.year0Tax)} in tax, which is more than the RV. `
           : p.strategy === "split"
-          ? `Splitting the ${money(p.k401)} across two tax years (December and January) costs about ${money(normal.year0Tax)} in tax. `
+          ? `Splitting the ${money(egg.k401)} across two tax years (December and January) costs about ${money(normal.year0Tax)} in tax. `
           : `Withdrawing as needed, year one still costs about ${money(normal.year0Tax)} in tax because the setup spending lands in that year. `}
         {`After ${money(upfrontTotal)} of land and setup, the household spends about ${money(steadyPre65)}/yr before 65`}
         {ssAnnual > 0
@@ -1518,6 +1554,23 @@ export default function RetreatPlan() {
           )}
         </Callout>
       </Stack>
+
+      {egg.years > 0 && (
+        <Callout tone="info" title={`Working until ${p.startYear}`}>
+          {egg.years === 1
+            ? `One year of pay before retirement, during ${THIS_YEAR}.`
+            : `${egg.years} years of pay before retirement, ${THIS_YEAR} through ${p.startYear - 1}.`}{" "}
+          Nothing is withdrawn until then. The 401(k) goes from {money(p.k401)} today to{" "}
+          {money(egg.k401)}, with {money(egg.contrib)} a year contributed and {p.ret}% growth. Other savings go from{" "}
+          {money(p.savings ?? 0)} to {money(egg.savings)}, with {money(egg.save)} a year saved from wages.{" "}
+          {(p.jobPay ?? 0) > 0 && egg.contrib + egg.save > (p.jobPay ?? 0)
+            ? `Contributions plus savings add up to more than the ${money(p.jobPay)} wage.`
+            : "The rest of the paycheck is your cost of living now and is not in the plan."}{" "}
+          {egg.contrib > ((startAge(p) - egg.years) >= 50 ? 31000 : 23500)
+            ? `The 2026 employee deferral limit is $${(startAge(p) - egg.years) >= 50 ? "31,000" : "23,500"}. Employer match can sit on top of that.`
+            : ""}
+        </Callout>
+      )}
 
       <Grid columns={4} gap={16}>
         <Stat
@@ -1565,6 +1618,15 @@ export default function RetreatPlan() {
               </Field>
               <Field label="Year you retire">
                 <NumField value={p.startYear} onChange={(n) => set("startYear", n)} width={72} />
+              </Field>
+              <Field label="Wages until you retire, $/yr">
+                <NumField value={p.jobPay ?? 0} onChange={(n) => set("jobPay", n)} />
+              </Field>
+              <Field label="401(k) contribution, $/yr">
+                <NumField value={p.jobContrib ?? 0} onChange={(n) => set("jobContrib", n)} />
+              </Field>
+              <Field label="Saved from wages, $/yr">
+                <NumField value={p.jobSave ?? 0} onChange={(n) => set("jobSave", n)} />
               </Field>
               <Field label="401(k) balance">
                 <NumField value={p.k401} onChange={(n) => set("k401", n)} />
@@ -1896,7 +1958,8 @@ export default function RetreatPlan() {
           total={allocTotal}
           topLeftLabel={
             <Text size="small" tone="secondary">
-              {money(p.k401)} gross 401(k){savings > 0 ? ` + ${money(savings)} savings` : ""}
+              {money(egg.k401)} 401(k){egg.years > 0 ? " at retirement" : ""}
+              {savings > 0 ? ` + ${money(savings)} savings` : ""}
             </Text>
           }
           topRightLabel={<Text size="small" tone="secondary">{money(allocRemaining)} left to live on</Text>}
@@ -1947,7 +2010,7 @@ export default function RetreatPlan() {
         <Grid columns={4} gap={16}>
           <Stat
             value={kMoney(lumpTaxAfterMove.ok)}
-            label={`${st.name} tax on the full ${kMoney(p.k401)} if taken after moving`}
+            label={`${st.name} tax on the full ${kMoney(egg.k401)} if taken after moving`}
             tone={lumpTaxAfterMove.ok > 0 ? "warning" : undefined}
           />
           <Stat value="$0" label="State tax if taken while a Texas resident" tone="success" />
