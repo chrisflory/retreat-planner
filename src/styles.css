@@ -107,6 +107,18 @@ body {
   padding: 12px;
 }
 
+/* WebKitGTK paints a selection-colored plate behind native <button> text.
+   The filled tab hides it; the outline tabs do not. */
+button {
+  appearance: none;
+  -webkit-appearance: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+button::selection {
+  background: transparent;
+}
+
 .pill {
   font: inherit;
   font-size: 12.5px;
@@ -116,6 +128,12 @@ body {
   border-radius: 999px;
   padding: 3px 10px;
   white-space: nowrap;
+  -webkit-text-fill-color: currentColor;
+}
+.pill-label {
+  color: inherit;
+  background: none;
+  -webkit-text-fill-color: currentColor;
 }
 .pill.sm {
   font-size: 12px;

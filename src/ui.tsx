@@ -209,7 +209,7 @@ export function Pill({
       className={`pill${active ? " active" : ""}${size === "sm" ? " sm" : ""}${onClick ? " clickable" : ""}`}
       onClick={onClick}
     >
-      {children}
+      <span className="pill-label">{children}</span>
     </button>
   );
 }
