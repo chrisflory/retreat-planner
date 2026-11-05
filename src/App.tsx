@@ -54,6 +54,12 @@ type Params = {
   meatValue: number;
   state: StateId;
   txMove: boolean;
+  startYear: number;
+  ssCut: boolean;
+  finance: boolean;
+  downPct: number;
+  loanRate: number;
+  loanYears: number;
   powerMode: PowerMode;
 };
 
@@ -320,6 +326,12 @@ const DEFAULT_PARAMS: Params = {
   meatValue: 5,
   state: "OK",
   txMove: true,
+  startYear: 2027,
+  ssCut: false,
+  finance: false,
+  downPct: 20,
+  loanRate: 7,
+  loanYears: 15,
   powerMode: "grid",
 };
 
@@ -572,13 +584,27 @@ type SimResult = {
   stranded: number | null;
 };
 
+const SS_CUT_YEAR = 2033;
+const SS_CUT_TO = 0.8;
+
+function loanTerms(p: Params, land: number) {
+  if (!p.finance || land <= 0) return { financed: 0, payment: 0, years: 0, interest: 0 };
+  const financed = land * (1 - Math.min(100, Math.max(0, p.downPct)) / 100);
+  const n = Math.max(1, Math.round(p.loanYears));
+  const r = p.loanRate / 100;
+  const payment = r > 0 ? (financed * r) / (1 - Math.pow(1 + r, -n)) : financed / n;
+  return { financed, payment, years: n, interest: payment * n - financed };
+}
+
 function simulate(
   p: Params,
   rec: Record<string, number>,
   upfront: number,
   inflationPct: number,
   collapseAge: number | null,
+  land: number,
 ): SimResult {
+  const loan = loanTerms(p, land);
   const r = p.ret / 100;
   const inf = inflationPct / 100;
   const cliff = acaCliff(p);
@@ -604,9 +630,10 @@ function simulate(
       continue;
     }
     const f = Math.pow(1 + inf, t);
+    const ssFactor = p.ssCut && p.startYear + t >= SS_CUT_YEAR ? SS_CUT_TO : 1;
     const income =
-      (age >= p.ssAge ? p.ssMonthly * 12 * f : 0) + (age < p.otherUntil ? p.otherIncome : 0);
-    const extra = t === 0 ? upfront : 0;
+      (age >= p.ssAge ? p.ssMonthly * 12 * f * ssFactor : 0) + (age < p.otherUntil ? p.otherIncome : 0);
+    const extra = (t === 0 ? upfront - loan.financed : 0) + (t < loan.years ? loan.payment : 0);
 
     if (isLump(p)) {
       const unsub = t === 0 || (t === 1 && p.strategy === "split") || balance * r > cliff;
@@ -726,7 +753,7 @@ export default function OklahomaRetreatPlan() {
   const stateRows = STATE_IDS.map((id) => {
     const [sp, su, sr] = applyState(id, p, up, rec);
     const total = upfrontTotalFor(sp, su);
-    const sim = simulate(sp, sr, total, sp.inflation, null);
+    const sim = simulate(sp, sr, total, sp.inflation, null, su.land ?? 0);
     return {
       id,
       s: STATES[id],
@@ -749,11 +776,19 @@ export default function OklahomaRetreatPlan() {
   const upfrontTotal = coreTotal + (p.hardening ? hardTotal : 0) + (p.hunting ? huntTotal : 0);
   const hunt = huntYield(p);
   const offset = meatOffset(rec, p);
-  const landRv = (up.land ?? 0) + (up.rv ?? 0);
+  const land = up.land ?? 0;
+  const loan = loanTerms(p, land);
+  const landRv = land - loan.financed + (up.rv ?? 0);
 
-  const normal = simulate(p, rec, upfrontTotal, p.inflation, null);
-  const highInf = simulate(p, rec, upfrontTotal, 7, null);
-  const collapse = simulate(p, rec, upfrontTotal, p.inflation, p.collapseAge);
+  const normal = simulate(p, rec, upfrontTotal, p.inflation, null, land);
+  const highInf = simulate(p, rec, upfrontTotal, 7, null, land);
+  const collapse = simulate(p, rec, upfrontTotal, p.inflation, p.collapseAge, land);
+  const ssCutSim = simulate({ ...p, ssCut: true }, rec, upfrontTotal, p.inflation, null, land);
+  const noCutSim = simulate({ ...p, ssCut: false }, rec, upfrontTotal, p.inflation, null, land);
+  const cashSim = simulate({ ...p, finance: false }, rec, upfrontTotal, p.inflation, null, land);
+  const financedSim = simulate({ ...p, finance: true }, rec, upfrontTotal, p.inflation, null, land);
+  const loanIfOn = loanTerms({ ...p, finance: true }, land);
+  const ssCutYearAge = START_AGE + (SS_CUT_YEAR - p.startYear);
 
   const lumpTax = lumpSumTax(p);
   const lumpTaxAfterMove = lumpSumTax({ ...p, txMove: false });
@@ -761,7 +796,7 @@ export default function OklahomaRetreatPlan() {
   const lumpTaxSplit = lumpSumTax({ ...p, strategy: "split", txMove: true });
   const withheld = 0.2 * p.k401;
   const netAfterTax = normal.year0Gross > 0 && isLump(p) ? p.k401 - normal.year0Tax : p.k401;
-  const leftAfterSetup = isLump(p) ? netAfterTax - upfrontTotal : p.k401 - normal.year0Gross;
+  const leftAfterSetup = isLump(p) ? netAfterTax - (upfrontTotal - loan.financed) : p.k401 - normal.year0Gross;
   const pm = POWER[p.powerMode] ?? POWER.grid;
 
   const steadyPre65 = annualCost(rec, 60, p, false);
@@ -907,6 +942,22 @@ export default function OklahomaRetreatPlan() {
               <Field label="Rule of 55 (no 10% penalty)">
                 <Toggle checked={p.rule55} onChange={(v) => set("rule55", v)} />
               </Field>
+              <Field label="Seller-finance the land">
+                <Toggle checked={p.finance} onChange={(v) => set("finance", v)} />
+              </Field>
+              {p.finance && (
+                <>
+                  <Field label="Down payment, %">
+                    <NumField value={p.downPct} onChange={(n) => set("downPct", n)} width={64} />
+                  </Field>
+                  <Field label="Interest rate, %">
+                    <NumField value={p.loanRate} onChange={(n) => set("loanRate", n)} width={64} />
+                  </Field>
+                  <Field label="Loan length, years">
+                    <NumField value={p.loanYears} onChange={(n) => set("loanYears", n)} width={64} />
+                  </Field>
+                </>
+              )}
               <Divider />
               <Field label={adults > 1 ? "Social Security, $/mo combined" : "Social Security, $/mo"}>
                 <NumField value={p.ssMonthly} onChange={(n) => set("ssMonthly", n)} />
@@ -919,6 +970,12 @@ export default function OklahomaRetreatPlan() {
               </Field>
               <Field label="Part-time work until age">
                 <NumField value={p.otherUntil} onChange={(n) => set("otherUntil", n)} width={64} />
+              </Field>
+              <Field label="Year you retire (age 58)">
+                <NumField value={p.startYear} onChange={(n) => set("startYear", n)} width={72} />
+              </Field>
+              <Field label={`Social Security cut to 80% from ${SS_CUT_YEAR}`}>
+                <Toggle checked={p.ssCut} onChange={(v) => set("ssCut", v)} />
               </Field>
               <Divider />
               <Field label="Return on savings, %">
@@ -981,11 +1038,14 @@ export default function OklahomaRetreatPlan() {
         </Card>
 
         <Stack gap={12}>
-          <H3>Money remaining by age, three scenarios</H3>
+          <H3>Money remaining by age, {p.ssCut ? "three" : "four"} scenarios</H3>
           <LineChart
             categories={ages}
             series={[
-              { name: `Normal economy (${p.inflation}% inflation)`, data: normal.balances.map(Math.round), tone: "info" },
+              { name: `Normal economy (${p.inflation}% inflation)${p.ssCut ? ", Social Security cut" : ""}`, data: normal.balances.map(Math.round), tone: "info" },
+              ...(p.ssCut
+                ? []
+                : [{ name: `Social Security cut to 80% in ${SS_CUT_YEAR}`, data: ssCutSim.balances.map(Math.round), tone: "danger" as const }]),
               { name: "High inflation (7%)", data: highInf.balances.map(Math.round), tone: "warning" },
               { name: `Collapse at ${p.collapseAge} (cash frozen, useless)`, data: collapse.balances.map(Math.round), tone: "neutral" },
             ]}
@@ -998,8 +1058,9 @@ export default function OklahomaRetreatPlan() {
             spending inflates yearly, Social Security gets matching COLAs, savings earn the return rate. Tax on
             interest is ignored.
           </Text>
-          <Grid columns={3} gap={12}>
+          <Grid columns={4} gap={12}>
             <Stat value={lastsLabel(normal)} label="Normal: money lasts to age" tone={shortfall ? "danger" : "success"} />
+            <Stat value={lastsLabel(ssCutSim)} label={`Social Security cut in ${SS_CUT_YEAR}: lasts to age`} tone={ssCutSim.depletedAge !== null && ssCutSim.depletedAge < 85 ? "danger" : "success"} />
             <Stat value={lastsLabel(highInf)} label="High inflation: lasts to age" tone={highInf.depletedAge !== null && highInf.depletedAge < 85 ? "danger" : "success"} />
             <Stat value={kMoney(collapse.stranded ?? 0)} label={`Collapse: cash stranded at ${p.collapseAge}`} tone="warning" />
           </Grid>
@@ -1012,6 +1073,68 @@ export default function OklahomaRetreatPlan() {
           </Callout>
         </Stack>
       </Grid>
+
+      <Stack gap={12}>
+        <H2>Two what-ifs: a Social Security cut and seller financing</H2>
+        <Grid columns={2} gap={20} align="start">
+          <Card>
+            <CardHeader>Social Security cut to 80% in {SS_CUT_YEAR}</CardHeader>
+            <CardBody>
+              <Stack gap={10}>
+                <Text size="small" tone="secondary">
+                  The Social Security trust fund is projected to run short around 2033–2034. If Congress does nothing,
+                  benefits for everyone drop to roughly 77–81% of what's promised. Congress has always acted before,
+                  usually by raising taxes or the retirement age for younger workers, but a cut is worth stress-testing.
+                  You retire in {p.startYear}, so the cut would hit at age {ssCutYearAge}.
+                </Text>
+                <Grid columns={3} gap={12}>
+                  <Stat value={lastsLabel(noCutSim)} label="No cut: lasts to age" />
+                  <Stat value={lastsLabel(ssCutSim)} label="With the cut: lasts to age" tone={ssCutSim.depletedAge !== null && ssCutSim.depletedAge < 85 ? "danger" : undefined} />
+                  <Stat value={`${money(p.ssMonthly * 12 * (1 - SS_CUT_TO))}/yr`} label="Benefit lost, today's dollars" tone="warning" />
+                </Grid>
+                <Text size="small" tone="tertiary">
+                  {p.ssCut
+                    ? "The cut is switched on in Assumptions, so every chart and table in the plan includes it."
+                    : `The red line on the chart shows this case. Switch on "Social Security cut to 80% from ${SS_CUT_YEAR}" in Assumptions to apply it to the whole plan.`}{" "}
+                  Claiming later still helps: a cut applies to whatever benefit you've earned, and waiting from 62 to
+                  67 raises that benefit by about 30%.
+                </Text>
+              </Stack>
+            </CardBody>
+          </Card>
+          <Card>
+            <CardHeader>Seller-financing the land</CardHeader>
+            <CardBody>
+              <Stack gap={10}>
+                <Text size="small" tone="secondary">
+                  Instead of paying {money(land)} up front, put {p.downPct}% down ({money(land - loanIfOn.financed)}) and
+                  pay the seller {money(loanIfOn.payment)}/yr for {loanIfOn.years} years at {p.loanRate}%. That's{" "}
+                  {money(loanIfOn.interest)} of interest in total. It shrinks the year-one 401(k) withdrawal, so less of
+                  it is taxed at 24–35%.
+                </Text>
+                <Grid columns={3} gap={12}>
+                  <Stat value={kMoney(cashSim.year0Tax)} label="Year-one tax, paying cash" />
+                  <Stat value={kMoney(financedSim.year0Tax)} label="Year-one tax, seller-financed" tone={financedSim.year0Tax < cashSim.year0Tax ? "success" : undefined} />
+                  <Stat value={`${lastsLabel(cashSim)} → ${lastsLabel(financedSim)}`} label="Money lasts to age, cash → financed" />
+                </Grid>
+                <Text size="small" tone="tertiary">
+                  {isLump(p)
+                    ? `With Withdrawal set to "${p.strategy === "split" ? "Split over 2 tax years" : "All at once"}", the whole 401(k) is taxed up front anyway, so financing doesn't lower the tax. It only spreads the land cost over time, and you pay interest for that. Set Withdrawal to "As needed" to see the tax savings.`
+                    : "With \"As needed\" withdrawals, each loan payment comes out of the 401(k) in its own year, together with that year's living costs, instead of all landing in one high-bracket year."}{" "}
+                  {p.finance ? "Seller financing is switched on in Assumptions." : 'Switch on "Seller-finance the land" in Assumptions to apply it to the whole plan.'}
+                </Text>
+                <Callout tone="neutral" title="Doing seller financing safely">
+                  Many rural Oklahoma sellers offer it, typically 10–20% down, 6–9% interest and 5–15 years, sometimes with
+                  a balloon payment due early. Close through a title company or real-estate attorney. Get title
+                  insurance, and have a recorded deed with a mortgage, not a contract for deed: under a contract for deed
+                  the seller keeps title until the last payment. Ask for no prepayment penalty, so you can pay it off
+                  early from a low-tax year.
+                </Callout>
+              </Stack>
+            </CardBody>
+          </Card>
+        </Grid>
+      </Stack>
 
       <Stack gap={12}>
         <H2>Red states compared, after the 2026 midterms</H2>
