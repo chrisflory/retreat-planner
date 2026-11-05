@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   BarChart,
   Callout,
@@ -88,8 +89,6 @@ type StateInfo = {
   downside: string;
   tax: (w: number, mfj: boolean, fedTaxable: number) => number;
 };
-
-const PROPANE_PRICE = 2.9;
 
 const STATES: Record<StateId, StateInfo> = {
   OK: {
@@ -464,28 +463,104 @@ const LOCAL: Record<StateId, StateLocal> = {
   },
 };
 
+type StateEst = {
+  landPerAcre: number;
+  propaneGal: number;
+  baseGal: number;
+  propTax: number;
+  winterShelter: number;
+  cords: number;
+  stove: number;
+};
+
+type Estimates = {
+  acres: number;
+  propanePrice: number;
+  firewoodOwn: number;
+  firewoodBuy: number;
+  deerLb: number;
+  hogLb: number;
+  lardLb: number;
+  elkLb: number;
+  ssCutYear: number;
+  ssCutPct: number;
+  highInflation: number;
+  states: Record<StateId, StateEst>;
+};
+
+const DEFAULT_EST: Estimates = {
+  acres: 50,
+  propanePrice: 2.9,
+  firewoodOwn: 40,
+  firewoodBuy: 275,
+  deerLb: 45,
+  hogLb: 50,
+  lardLb: 6,
+  elkLb: 180,
+  ssCutYear: 2033,
+  ssCutPct: 80,
+  highInflation: 7,
+  states: Object.fromEntries(
+    STATE_IDS.map((id) => {
+      const s = STATES[id];
+      const north = s.winterShelter > 0;
+      return [
+        id,
+        {
+          landPerAcre: s.landPerAcre,
+          propaneGal: s.propaneGal,
+          baseGal: north ? 250 : 150,
+          propTax: s.propTax,
+          winterShelter: s.winterShelter,
+          cords: LOCAL[id].cords,
+          stove: north ? 3500 : 2500,
+        },
+      ];
+    }),
+  ) as Record<StateId, StateEst>,
+};
+
+function mergeEst(stored: Partial<Estimates> | null | undefined): Estimates {
+  const s = stored ?? {};
+  return {
+    ...DEFAULT_EST,
+    ...s,
+    states: Object.fromEntries(
+      STATE_IDS.map((id) => [id, { ...DEFAULT_EST.states[id], ...(s.states?.[id] ?? {}) }]),
+    ) as Record<StateId, StateEst>,
+  };
+}
+
+let EST: Estimates = DEFAULT_EST;
+const sEst = (id: StateId) => EST.states[id];
+
 const HEAT: Record<HeatMode, { label: string; summary: string }> = {
   propane: { label: "Propane", summary: "The RV furnace and appliances run on propane. It's easy, but it's the costliest heat and depends on deliveries." },
   both: { label: "Wood stove, propane backup", summary: "A wood stove carries most of the winter. Propane covers cooking, hot water, the fridge and cold snaps when you're away or sick." },
   wood: { label: "Wood only (propane for cooking)", summary: "All heat from wood. Propane only for cooking, hot water and the fridge, so a small tank lasts most of a year." },
 };
 const HEAT_IDS = Object.keys(HEAT) as HeatMode[];
-const FIREWOOD_OWN_PER_CORD = 40;
-const FIREWOOD_BUY_PER_CORD = 275;
-
 function heatPlan(id: StateId, mode: HeatMode) {
-  const s = STATES[id];
-  const l = LOCAL[id];
-  const baseGal = s.winterShelter > 0 ? 250 : 150;
+  const e = sEst(id);
+  const baseGal = Math.min(e.baseGal, e.propaneGal);
   const propaneGal =
-    mode === "propane" ? s.propaneGal : mode === "both" ? Math.round(baseGal + 0.25 * (s.propaneGal - baseGal)) : baseGal;
-  const cords = mode === "propane" ? 0 : mode === "both" ? Math.ceil(l.cords * 0.8) : l.cords;
-  const perCord = l.ownWood ? FIREWOOD_OWN_PER_CORD : FIREWOOD_BUY_PER_CORD;
+    mode === "propane" ? e.propaneGal : mode === "both" ? Math.round(baseGal + 0.25 * (e.propaneGal - baseGal)) : baseGal;
+  const cords = mode === "propane" ? 0 : mode === "both" ? Math.ceil(e.cords * 0.8) : e.cords;
+  const perCord = LOCAL[id].ownWood ? EST.firewoodOwn : EST.firewoodBuy;
   return {
     propaneGal,
     cords,
-    firewood: cords * perCord,
-    stove: mode === "propane" ? 0 : s.winterShelter > 0 ? 3500 : 2500,
+    firewood: Math.round(cords * perCord),
+    stove: mode === "propane" ? 0 : e.stove,
+  };
+}
+
+function derivedForState(id: StateId, heat: HeatMode) {
+  const e = sEst(id);
+  const h = heatPlan(id, heat);
+  return {
+    up: { land: Math.round(e.landPerAcre * EST.acres), winter: e.winterShelter, woodheat: h.stove },
+    rec: { propane: Math.round(h.propaneGal * EST.propanePrice), firewood: h.firewood, proptax: e.propTax },
   };
 }
 
@@ -547,17 +622,11 @@ function applyState(
   rec: Record<string, number>,
 ): [Params, Record<string, number>, Record<string, number>] {
   const s = STATES[id];
-  const h = heatPlan(id, p.heat ?? "propane");
+  const d = derivedForState(id, p.heat ?? "propane");
   return [
     { ...p, state: id, hogsPerYear: s.hogs, elkPerYear: s.elk },
-    {
-      ...up,
-      land: s.landPerAcre * 50,
-      winter: s.winterShelter,
-      woodheat: h.stove,
-      hogtrap: s.hogs > 0 ? up.hogtrap || PRESET_PLANNED.hogtrap : 0,
-    },
-    { ...rec, propane: Math.round(h.propaneGal * PROPANE_PRICE), firewood: h.firewood, proptax: s.propTax },
+    { ...up, ...d.up, hogtrap: s.hogs > 0 ? up.hogtrap || PRESET_PLANNED.hogtrap : 0 },
+    { ...rec, ...d.rec },
   ];
 }
 
@@ -625,9 +694,6 @@ const POWER: Record<
 };
 const POWER_IDS = Object.keys(POWER) as PowerMode[];
 
-const DEER_LB = 45;
-const HOG_LB = 50;
-const HOG_LARD_LB = 6;
 const KCAL_VENISON_LB = 550;
 const KCAL_HOG_LB = 800;
 const KCAL_LARD_LB = 4000;
@@ -661,13 +727,12 @@ function upfrontTotalFor(p: Params, up: Record<string, number>): number {
   }, 0);
 }
 
-const ELK_LB = 180;
 
 function huntYield(p: Params) {
-  const deerLb = p.deerPerYear * DEER_LB;
-  const hogLb = p.hogsPerYear * HOG_LB;
-  const elkLb = (p.elkPerYear ?? 0) * ELK_LB;
-  const lardLb = p.hogsPerYear * HOG_LARD_LB;
+  const deerLb = p.deerPerYear * EST.deerLb;
+  const hogLb = p.hogsPerYear * EST.hogLb;
+  const elkLb = (p.elkPerYear ?? 0) * EST.elkLb;
+  const lardLb = p.hogsPerYear * EST.lardLb;
   const kcal =
     (deerLb + elkLb) * KCAL_VENISON_LB + hogLb * KCAL_HOG_LB + lardLb * KCAL_LARD_LB;
   const need = KCAL_PER_PERSON_YEAR * adultsOf(p);
@@ -677,7 +742,7 @@ function huntYield(p: Params) {
 type UpfrontItem = { id: string; label: string; note: string; hardening: boolean; hunting?: boolean };
 
 const UPFRONT: UpfrontItem[] = [
-  { id: "land", label: "Land, 50 acres", note: "Set by the state selector; edit to match a real listing", hardening: false },
+  { id: "land", label: "Land, 50 acres", note: "Acres × the state's $/acre under Estimates; edit to match a real listing", hardening: false },
   { id: "winter", label: "Year-round insulated shelter", note: "Required where winters reach −20°F; an RV alone won't survive it", hardening: false },
   { id: "rv", label: "Used RV", note: "Look for a 4-season unit; it lives outdoors through ice storms and 100°F summers", hardening: false },
   { id: "closing", label: "Closing, survey, title", note: "Rural tracts often need a new survey", hardening: false },
@@ -872,8 +937,6 @@ type SimResult = {
   stranded: number | null;
 };
 
-const SS_CUT_YEAR = 2033;
-const SS_CUT_TO = 0.8;
 
 function loanTerms(p: Params, land: number) {
   if (!p.finance || land <= 0) return { financed: 0, payment: 0, years: 0, interest: 0 };
@@ -918,7 +981,7 @@ function simulate(
       continue;
     }
     const f = Math.pow(1 + inf, t);
-    const ssFactor = p.ssCut && p.startYear + t >= SS_CUT_YEAR ? SS_CUT_TO : 1;
+    const ssFactor = p.ssCut && p.startYear + t >= EST.ssCutYear ? EST.ssCutPct / 100 : 1;
     const income =
       (age >= p.ssAge ? p.ssMonthly * 12 * f * ssFactor : 0) + (age < p.otherUntil ? p.otherIncome : 0);
     const extra = (t === 0 ? upfront - loan.financed : 0) + (t < loan.years ? loan.payment : 0);
@@ -964,11 +1027,20 @@ function NumField({
   onChange: (n: number) => void;
   width?: number;
 }) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => {
+    setText((t) => (t === "" ? (value === 0 ? "" : String(value)) : Number(t) === value ? t : String(value)));
+  }, [value]);
   return (
     <TextInput
       type="number"
-      value={String(value)}
-      onChange={(v) => onChange(v === "" ? 0 : Number(v))}
+      value={text}
+      onChange={(v) => {
+        setText(v);
+        const n = Number(v);
+        if (v !== "" && Number.isFinite(n)) onChange(n);
+        else if (v === "") onChange(0);
+      }}
       style={{ width }}
     />
   );
@@ -1001,6 +1073,7 @@ export function loadListingIntoPlan(state: StateId | null, price: number) {
   let p = readStored<Params>("params-v2", DEFAULT_PARAMS);
   let up = readStored<Record<string, number>>("upfront-v2", PRESET_PLANNED);
   let rec = readStored<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
+  EST = mergeEst(readStored<Partial<Estimates>>("estimates-v1", {}));
   if (state && STATES[state]) [p, up, rec] = applyState(state, p, up, rec);
   up = { ...up, land: Math.round(price) };
   localStorage.setItem("retreat-planner:params-v2", JSON.stringify(p));
@@ -1015,6 +1088,42 @@ export default function RetreatPlan() {
   const p: Params = { ...DEFAULT_PARAMS, ...storedP };
   const up: Record<string, number> = { ...PRESET_PLANNED, ...storedUp };
   const rec: Record<string, number> = { ...RECURRING_DEFAULTS, ...storedRec };
+  const [storedEst, setStoredEst] = useCanvasState<Partial<Estimates>>("estimates-v1", {});
+  EST = mergeEst(storedEst);
+  const est = EST;
+  const AFFECTS: Record<string, { up?: Array<"land" | "winter" | "woodheat">; rec?: Array<"propane" | "firewood" | "proptax"> }> = {
+    acres: { up: ["land"] },
+    landPerAcre: { up: ["land"] },
+    winterShelter: { up: ["winter"] },
+    stove: { up: ["woodheat"] },
+    propanePrice: { rec: ["propane"] },
+    propaneGal: { rec: ["propane"] },
+    baseGal: { rec: ["propane"] },
+    firewoodOwn: { rec: ["firewood"] },
+    firewoodBuy: { rec: ["firewood"] },
+    cords: { rec: ["firewood"] },
+    propTax: { rec: ["proptax"] },
+  };
+  const updateEst = (next: Estimates, key: string, current: boolean) => {
+    EST = next;
+    setStoredEst(next);
+    const a = AFFECTS[key];
+    if (!a || !current) return;
+    const d = derivedForState(stateOf(p), p.heat ?? "propane");
+    if (a.up) setUp((prev) => ({ ...prev, ...Object.fromEntries(a.up!.map((k) => [k, d.up[k]])) }));
+    if (a.rec) setRec((prev) => ({ ...prev, ...Object.fromEntries(a.rec!.map((k) => [k, d.rec[k]])) }));
+  };
+  const setEst = <K extends Exclude<keyof Estimates, "states">>(k: K, v: number) =>
+    updateEst({ ...est, [k]: v }, k, true);
+  const setStateEst = (id: StateId, k: keyof StateEst, v: number) =>
+    updateEst({ ...est, states: { ...est.states, [id]: { ...est.states[id], [k]: v } } }, k, id === stateOf(p));
+  const resetEst = () => {
+    EST = DEFAULT_EST;
+    setStoredEst({});
+    const d = derivedForState(stateOf(p), p.heat ?? "propane");
+    setUp((prev) => ({ ...prev, ...d.up }));
+    setRec((prev) => ({ ...prev, ...d.rec }));
+  };
 
   const set = <K extends keyof Params>(k: K, v: Params[K]) => setP((prev) => ({ ...prev, [k]: v }));
   const st = STATES[stateOf(p)];
@@ -1045,16 +1154,16 @@ export default function RetreatPlan() {
     const h = heatPlan(stateOf(p), mode);
     set("heat", mode);
     setUp((prev) => ({ ...prev, woodheat: h.stove }));
-    setRec((prev) => ({ ...prev, propane: Math.round(h.propaneGal * PROPANE_PRICE), firewood: h.firewood }));
+    setRec((prev) => ({ ...prev, propane: Math.round(h.propaneGal * EST.propanePrice), firewood: h.firewood }));
   };
   const applyLiving = (id: LivingPreset) => setRec((prev) => ({ ...prev, ...LIVING_PRESETS[id].values }));
   const recLabel = (item: RecurringItem) => {
     if (item.id === "propane")
-      return `Propane (~${hp.propaneGal.toLocaleString("en-US")} gal/yr at $${PROPANE_PRICE.toFixed(2)}: ${heat === "propane" ? "RV furnace, cooking, hot water" : heat === "both" ? "cooking, hot water, cold-snap backup" : "cooking, hot water, fridge"})`;
+      return `Propane (~${hp.propaneGal.toLocaleString("en-US")} gal/yr at $${EST.propanePrice.toFixed(2)}: ${heat === "propane" ? "RV furnace, cooking, hot water" : heat === "both" ? "cooking, hot water, cold-snap backup" : "cooking, hot water, fridge"})`;
     if (item.id === "firewood")
       return loc.ownWood
         ? `Firewood (~${hp.cords} cords/yr cut from your land: saw gas, chains, bar oil)`
-        : `Firewood (~${hp.cords} cords/yr bought at ~$${FIREWOOD_BUY_PER_CORD}/cord)`;
+        : `Firewood (~${hp.cords} cords/yr bought at ~$${EST.firewoodBuy}/cord)`;
     return item.label;
   };
   const upNote = (u: UpfrontItem) => {
@@ -1100,14 +1209,14 @@ export default function RetreatPlan() {
   const landRv = land - loan.financed + (up.rv ?? 0);
 
   const normal = simulate(p, rec, upfrontTotal, p.inflation, null, land);
-  const highInf = simulate(p, rec, upfrontTotal, 7, null, land);
+  const highInf = simulate(p, rec, upfrontTotal, EST.highInflation, null, land);
   const collapse = simulate(p, rec, upfrontTotal, p.inflation, p.collapseAge, land);
   const ssCutSim = simulate({ ...p, ssCut: true }, rec, upfrontTotal, p.inflation, null, land);
   const noCutSim = simulate({ ...p, ssCut: false }, rec, upfrontTotal, p.inflation, null, land);
   const cashSim = simulate({ ...p, finance: false }, rec, upfrontTotal, p.inflation, null, land);
   const financedSim = simulate({ ...p, finance: true }, rec, upfrontTotal, p.inflation, null, land);
   const loanIfOn = loanTerms({ ...p, finance: true }, land);
-  const ssCutYearAge = START_AGE + (SS_CUT_YEAR - p.startYear);
+  const ssCutYearAge = START_AGE + (EST.ssCutYear - p.startYear);
 
   const lumpTax = lumpSumTax(p);
   const lumpTaxAfterMove = lumpSumTax({ ...p, txMove: false });
@@ -1165,7 +1274,7 @@ export default function RetreatPlan() {
       headers={["Item", "Cost", "Why"]}
       columnAlign={["left", "right", "left"]}
       rows={UPFRONT.filter((u) => groupOf(u, p) === group).map((u) => [
-        u.label,
+        u.id === "land" ? `Land, ${est.acres} acres` : u.label,
         <NumField
           key={u.id}
           value={up[u.id] ?? 0}
@@ -1182,9 +1291,9 @@ export default function RetreatPlan() {
   return (
     <Stack gap={24} style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
       <Stack gap={6}>
-        <H1>{st.name} 50-acre retreat: retirement cash plan</H1>
+        <H1>{st.name} {EST.acres}-acre retreat: retirement cash plan</H1>
         <Text tone="secondary">
-          Household of {who}, retiring at 58, living in an RV on 50 acres with a water source in {st.region}. Costs
+          Household of {who}, retiring at 58, living in an RV on {EST.acres} acres with a water source in {st.region}. Costs
           marked "per person" scale with the household size in Assumptions. Every number with a box is editable, and
           the charts recompute as you type. Taxes use 2026 federal brackets plus {st.name} state tax (
           {st.taxNote})
@@ -1302,7 +1411,7 @@ export default function RetreatPlan() {
               <Field label="Year you retire (age 58)">
                 <NumField value={p.startYear} onChange={(n) => set("startYear", n)} width={72} />
               </Field>
-              <Field label={`Social Security cut to 80% from ${SS_CUT_YEAR}`}>
+              <Field label={`Social Security cut to ${EST.ssCutPct}% from ${EST.ssCutYear}`}>
                 <Toggle checked={p.ssCut} onChange={(v) => set("ssCut", v)} />
               </Field>
               <Divider />
@@ -1380,8 +1489,8 @@ export default function RetreatPlan() {
               { name: `Normal economy (${p.inflation}% inflation)${p.ssCut ? ", Social Security cut" : ""}`, data: normal.balances.map(Math.round), tone: "info" },
               ...(p.ssCut
                 ? []
-                : [{ name: `Social Security cut to 80% in ${SS_CUT_YEAR}`, data: ssCutSim.balances.map(Math.round), tone: "danger" as const }]),
-              { name: "High inflation (7%)", data: highInf.balances.map(Math.round), tone: "warning" },
+                : [{ name: `Social Security cut to ${EST.ssCutPct}% in ${EST.ssCutYear}`, data: ssCutSim.balances.map(Math.round), tone: "danger" as const }]),
+              { name: `High inflation (${EST.highInflation}%)`, data: highInf.balances.map(Math.round), tone: "warning" },
               { name: `Collapse at ${p.collapseAge} (cash frozen, useless)`, data: collapse.balances.map(Math.round), tone: "neutral" },
             ]}
             valuePrefix="$"
@@ -1395,7 +1504,7 @@ export default function RetreatPlan() {
           </Text>
           <Grid columns={4} gap={12}>
             <Stat value={lastsLabel(normal)} label="Normal: money lasts to age" tone={shortfall ? "danger" : "success"} />
-            <Stat value={lastsLabel(ssCutSim)} label={`Social Security cut in ${SS_CUT_YEAR}: lasts to age`} tone={ssCutSim.depletedAge !== null && ssCutSim.depletedAge < 85 ? "danger" : "success"} />
+            <Stat value={lastsLabel(ssCutSim)} label={`Social Security cut in ${EST.ssCutYear}: lasts to age`} tone={ssCutSim.depletedAge !== null && ssCutSim.depletedAge < 85 ? "danger" : "success"} />
             <Stat value={lastsLabel(highInf)} label="High inflation: lasts to age" tone={highInf.depletedAge !== null && highInf.depletedAge < 85 ? "danger" : "success"} />
             <Stat value={kMoney(collapse.stranded ?? 0)} label={`Collapse: cash stranded at ${p.collapseAge}`} tone="warning" />
           </Grid>
@@ -1413,7 +1522,7 @@ export default function RetreatPlan() {
         <H2>Two what-ifs: a Social Security cut and seller financing</H2>
         <Grid columns={2} gap={20} align="start">
           <Card>
-            <CardHeader>Social Security cut to 80% in {SS_CUT_YEAR}</CardHeader>
+            <CardHeader>Social Security cut to {EST.ssCutPct}% in {EST.ssCutYear}</CardHeader>
             <CardBody>
               <Stack gap={10}>
                 <Text size="small" tone="secondary">
@@ -1425,12 +1534,12 @@ export default function RetreatPlan() {
                 <Grid columns={3} gap={12}>
                   <Stat value={lastsLabel(noCutSim)} label="No cut: lasts to age" />
                   <Stat value={lastsLabel(ssCutSim)} label="With the cut: lasts to age" tone={ssCutSim.depletedAge !== null && ssCutSim.depletedAge < 85 ? "danger" : undefined} />
-                  <Stat value={`${money(p.ssMonthly * 12 * (1 - SS_CUT_TO))}/yr`} label="Benefit lost, today's dollars" tone="warning" />
+                  <Stat value={`${money(p.ssMonthly * 12 * (1 - EST.ssCutPct / 100))}/yr`} label="Benefit lost, today's dollars" tone="warning" />
                 </Grid>
                 <Text size="small" tone="tertiary">
                   {p.ssCut
                     ? "The cut is switched on in Assumptions, so every chart and table in the plan includes it."
-                    : `The red line on the chart shows this case. Switch on "Social Security cut to 80% from ${SS_CUT_YEAR}" in Assumptions to apply it to the whole plan.`}{" "}
+                    : `The red line on the chart shows this case. Switch on "Social Security cut to ${EST.ssCutPct}% from ${EST.ssCutYear}" in Assumptions to apply it to the whole plan.`}{" "}
                   Claiming later still helps: a cut applies to whatever benefit you've earned, and waiting from 62 to
                   67 raises that benefit by about 30%.
                 </Text>
@@ -1481,7 +1590,7 @@ export default function RetreatPlan() {
           winter heating, property tax and game. Click a state name to load it into the planner.
         </Text>
         <Table
-          headers={["State", "50 ac land", "State tax on lump sum", `Heating/yr (${HEAT[heat].label.toLowerCase()})`, "Living cost/yr", "Money lasts to", "Winter low", "Growing season", "Rain", "Medicaid expansion"]}
+          headers={["State", `${EST.acres} ac land`, "State tax on lump sum", `Heating/yr (${HEAT[heat].label.toLowerCase()})`, "Living cost/yr", "Money lasts to", "Winter low", "Growing season", "Rain", "Medicaid expansion"]}
           columnAlign={["left", "right", "right", "right", "right", "right", "left", "left", "left", "left"]}
           rowTone={stateRows.map((r) => (r.id === stateOf(p) ? "info" : undefined))}
           rows={stateRows.map((r) => [
@@ -1517,7 +1626,7 @@ export default function RetreatPlan() {
             />
             <Text size="small" tone="tertiary">
               X-axis: age when savings hit zero in a normal economy ({END_AGE} means it never runs out). Uses your
-              current Assumptions. Land prices are rough 2025–26 asking prices for 50 rural acres with water. Check
+              current Assumptions. Land prices are rough 2025–26 asking prices for rural land with water, times your acreage. Edit them under Estimates. Check
               real listings.
             </Text>
           </Stack>
@@ -1532,7 +1641,7 @@ export default function RetreatPlan() {
             {st.winterShelter > 0 && (
               <Callout tone="warning" title="An RV alone won't get you through this winter">
                 Winters here reach {st.winterLow}. RV plumbing freezes, and a furnace can burn 10+ gallons of propane a
-                day. The plan adds {money(st.winterShelter)} for an insulated shelter and budgets{" "}
+                day. The plan adds {money(sEst(stateOf(p)).winterShelter)} for an insulated shelter and budgets{" "}
                 {hp.propaneGal.toLocaleString("en-US")} gal/yr of propane
                 {hp.cords > 0 ? ` and ${hp.cords} cords of firewood` : ""}.
               </Callout>
@@ -1702,8 +1811,8 @@ export default function RetreatPlan() {
         <Callout tone={heat === "propane" ? "neutral" : "info"} title={`Heat: ${HEAT[heat].label}, in ${st.name}`}>
           {HEAT[heat].summary}{" "}
           {heat === "propane"
-            ? `In ${st.name} that's about ${STATES[stateOf(p)].propaneGal.toLocaleString("en-US")} gal/yr (${money(rec.propane ?? 0)}). Heating with wood instead would cut propane to about ${heatPlan(stateOf(p), "wood").propaneGal} gal and need about ${LOCAL[stateOf(p)].cords} cords a year.`
-            : `In ${st.name} plan on about ${hp.cords} cords a year and ${hp.propaneGal} gal of propane. ${loc.woodNote}. ${loc.ownWood ? `Cutting your own costs about $${FIREWOOD_OWN_PER_CORD} a cord in saw gas, chains and bar oil, but it takes about a day of work per cord, so cut and stack a year ahead. Green wood won't burn well.` : `Bought firewood runs about $${FIREWOOD_BUY_PER_CORD} a cord here.`}`}{" "}
+            ? `In ${st.name} that's about ${sEst(stateOf(p)).propaneGal.toLocaleString("en-US")} gal/yr (${money(rec.propane ?? 0)}). Heating with wood instead would cut propane to about ${heatPlan(stateOf(p), "wood").propaneGal} gal and need about ${sEst(stateOf(p)).cords} cords a year.`
+            : `In ${st.name} plan on about ${hp.cords} cords a year and ${hp.propaneGal} gal of propane. ${loc.woodNote}. ${loc.ownWood ? `Cutting your own costs about $${EST.firewoodOwn} a cord in saw gas, chains and bar oil, but it takes about a day of work per cord, so cut and stack a year ahead. Green wood won't burn well.` : `Bought firewood runs about $${EST.firewoodBuy} a cord here.`}`}{" "}
           {heat !== "propane" &&
             "Many RV insurers won't cover a wood stove, so tell your insurer, or put the stove in the cabin, barn room or shelter instead. Use an RV- or marine-rated stove with the listed clearances and an insulated chimney, and keep a CO alarm by the bed."}
         </Callout>
@@ -1745,6 +1854,99 @@ export default function RetreatPlan() {
             </Callout>
           </Stack>
         </Grid>
+      </Stack>
+
+      <Stack gap={12}>
+        <Row gap={12} align="center">
+          <H2>Estimates behind the numbers</H2>
+          <Pill size="sm" onClick={resetEst}>Reset estimates</Pill>
+        </Row>
+        <Text tone="secondary">
+          These are the rough figures the planner fills in for you. Change any of them to match a quote, a listing or
+          what you pay locally. Your edits are saved. Editing one updates the matching line in the plan for{" "}
+          {st.name} (for example, land price per acre rewrites the land cost), so re-enter a listing price afterward
+          if you'd loaded one. Edits for other states show up in the state comparison and apply when you switch.
+        </Text>
+        <Grid columns={2} gap={20} align="start">
+          <Card>
+            <CardHeader>Prices, yields and scenarios</CardHeader>
+            <CardBody>
+              <Grid columns={2} gap={10}>
+                <Field label="Acres you're buying">
+                  <NumField value={est.acres} onChange={(n) => setEst("acres", n)} width={72} />
+                </Field>
+                <Field label="Propane, $/gal">
+                  <NumField value={est.propanePrice} onChange={(n) => setEst("propanePrice", n)} width={72} />
+                </Field>
+                <Field label="Firewood you cut, $/cord">
+                  <NumField value={est.firewoodOwn} onChange={(n) => setEst("firewoodOwn", n)} width={72} />
+                </Field>
+                <Field label="Firewood bought, $/cord">
+                  <NumField value={est.firewoodBuy} onChange={(n) => setEst("firewoodBuy", n)} width={72} />
+                </Field>
+                <Field label="Boneless meat per deer, lb">
+                  <NumField value={est.deerLb} onChange={(n) => setEst("deerLb", n)} width={72} />
+                </Field>
+                <Field label="Meat per hog, lb">
+                  <NumField value={est.hogLb} onChange={(n) => setEst("hogLb", n)} width={72} />
+                </Field>
+                <Field label="Lard per hog, lb">
+                  <NumField value={est.lardLb} onChange={(n) => setEst("lardLb", n)} width={72} />
+                </Field>
+                <Field label="Boneless meat per elk, lb">
+                  <NumField value={est.elkLb} onChange={(n) => setEst("elkLb", n)} width={72} />
+                </Field>
+                <Field label="Social Security cut starts in">
+                  <NumField value={est.ssCutYear} onChange={(n) => setEst("ssCutYear", n)} width={72} />
+                </Field>
+                <Field label="Benefits paid after the cut, %">
+                  <NumField value={est.ssCutPct} onChange={(n) => setEst("ssCutPct", n)} width={72} />
+                </Field>
+                <Field label="High-inflation scenario, %">
+                  <NumField value={est.highInflation} onChange={(n) => setEst("highInflation", n)} width={72} />
+                </Field>
+              </Grid>
+            </CardBody>
+          </Card>
+          <Text size="small" tone="tertiary">
+            Defaults: propane about $2.90/gal for a homeowner-owned tank in 2026. Cutting your own wood costs about $40
+            a cord in saw gas, chains and bar oil, and bought split wood about $275 a cord. A field-dressed whitetail
+            gives about 45 lb of boneless meat, a 150 lb hog about 50 lb of meat and 6 lb of lard, and an elk about 180
+            lb. The Social Security trustees project the trust fund running short around 2033, with about 80% of
+            benefits still payable. Everything else, like setup and living costs, is edited directly in those tables.
+          </Text>
+        </Grid>
+        <H3>By state</H3>
+        <Table
+          headers={["State", "Land, $/acre", "Propane heat, gal/yr", "Propane with wood heat, gal/yr", "Property tax, $/yr", "Winter shelter, $", "Firewood, cords/yr", "Wood stove setup, $"]}
+          columnAlign={["left", "right", "right", "right", "right", "right", "right", "right"]}
+          rowTone={STATE_IDS.map((id) => (id === stateOf(p) ? "info" : undefined))}
+          rows={STATE_IDS.map((id) => {
+            const e = est.states[id];
+            const f = (k: keyof StateEst) => (
+              <NumField key={`${id}-${k}`} value={e[k]} onChange={(n) => setStateEst(id, k, n)} width={80} />
+            );
+            return [
+              STATES[id].name,
+              f("landPerAcre"),
+              f("propaneGal"),
+              f("baseGal"),
+              f("propTax"),
+              f("winterShelter"),
+              f("cords"),
+              f("stove"),
+            ];
+          })}
+          striped
+        />
+        <Text size="small" tone="tertiary">
+          "Propane heat" is a full year of heating, cooking and hot water on propane. "Propane with wood heat" is what's
+          left for cooking, hot water and the fridge when wood does the heating. A winter shelter is only budgeted where
+          winters reach −20°F or colder.
+          {LOCAL[stateOf(p)].ownWood
+            ? ` Firewood in ${st.name} is costed as cut from your own land.`
+            : ` Firewood in ${st.name} is costed as bought, because the land has few trees.`}
+        </Text>
       </Stack>
 
       <Stack gap={12}>
@@ -1885,7 +2087,7 @@ export default function RetreatPlan() {
             ["Calories", `~${(hunt.need / 1e6).toFixed(1)}M kcal (2,200/day per person)`, `1-yr stored food covers year 1. After that: about ¼ acre of garden and 4–6 hens per person${p.hunting ? `, and ${p.deerPerYear} deer + ${p.hogsPerYear} hogs (~${Math.round(hunt.share * 100)}% of calories)` : ""}`, `Year 2+. A first-year garden with a growing season of ${st.growing} seldom covers half your calories. Start it in a normal year.`],
             ["Drinking + hygiene water", `~${(1825 * adults).toLocaleString("en-US")} gal (5 gal/person/day)`, "Hand pump on the well covers this easily", "Electric pump without hand-pump backup"],
             ["Garden water", "~100–140K gal per summer for ¼ acre", `Pond, creek, rain catchment (a 1,000 sq ft roof yields ~${(Math.round((parseFloat(st.rain) * 1000 * 0.62 * 0.8) / 1000) || 0).toLocaleString("en-US")}K gal/yr with ${st.rain} of rain)`, "Drought years dry up ponds and shallow wells"],
-            ["Heat", `~${STATES[stateOf(p)].propaneGal.toLocaleString("en-US")} gal propane, or ~${loc.cords} cords of wood`, `Stored propane lasts 1–2 winters. ${loc.woodNote}`, st.winterShelter > 0 ? `Winters reach ${st.winterLow}. Losing heat is deadly within hours` : "RVs heat poorly. Ice storms are the real killer"],
+            ["Heat", `~${sEst(stateOf(p)).propaneGal.toLocaleString("en-US")} gal propane, or ~${sEst(stateOf(p)).cords} cords of wood`, `Stored propane lasts 1–2 winters. ${loc.woodNote}`, st.winterShelter > 0 ? `Winters reach ${st.winterLow}. Losing heat is deadly within hours` : "RVs heat poorly. Ice storms are the real killer"],
             ["Medicine", "Every prescription you take, plus dental", "Stockpile what your doctor will allow, get dental work done early, learn first aid", "The largest risk at 58+. You can't grow it"],
             ["Cooling", loc.summerHigh, "Shade, fans on solar, a cabin with an earth-sheltered side", "RV A/C can't run on a modest solar bank"],
           ]}
@@ -1901,7 +2103,7 @@ export default function RetreatPlan() {
               ? "With few or no feral hogs here, the plan sets hogs to 0 and loses the lard. Venison and elk are very lean, so plan on stored oil or raising a few pigs for fat."
               : ""}
             {st.elk > 0
-              ? ` One elk yields about ${ELK_LB} lb of boneless meat, about four deer's worth. The deer processing steps below apply to elk too.`
+              ? ` One elk yields about ${EST.elkLb} lb of boneless meat, about four deer's worth. The deer processing steps below apply to elk too.`
               : ""}
           </Callout>
         )}
@@ -1913,8 +2115,8 @@ export default function RetreatPlan() {
           <Stat value={money(huntTotal)} label="Gear cost, one-time" />
         </Grid>
         <Text size="small" tone="tertiary">
-          Yields assume about {DEER_LB} lb boneless meat per deer and, for a 150 lb hog, about {HOG_LB} lb
-          of meat plus {HOG_LARD_LB} lb of lard. Venison is ~{KCAL_VENISON_LB} kcal/lb, hog meat ~{KCAL_HOG_LB}, lard
+          Yields assume about {EST.deerLb} lb boneless meat per deer and, for a 150 lb hog, about {EST.hogLb} lb
+          of meat plus {EST.lardLb} lb of lard. Venison is ~{KCAL_VENISON_LB} kcal/lb, hog meat ~{KCAL_HOG_LB}, lard
           ~{KCAL_LARD_LB}. Savings are counted at your store-meat price, capped at half the grocery budget, and are
           already subtracted in the runway chart. Meat covers your protein needs, not your calories. Meat this lean
           can't be most of your diet anyway, so the garden and stored grain still have to supply most of the
@@ -2129,7 +2331,7 @@ export default function RetreatPlan() {
               <Text weight="semibold">Where to buy.</Text>{" "}
               {stateOf(p) === "OK"
                 ? "Southeast and east Oklahoma (Pushmataha, Latimer, Le Flore, McCurtain, Pittsburg counties) get 40–55 inches of rain a year, have timber for firewood, and still sell raw land near $1,500/acre. Western Oklahoma land is cheaper but gets 20–30 inches of rain, with little wood and a lot of wind."
-                : `${st.region}. Expect about ${money(st.landPerAcre)}/acre, ${st.rain} of rain, a growing season of ${st.growing}, and winter lows of ${st.winterLow}. ${st.upside}.`}
+                : `${st.region}. Expect about ${money(sEst(stateOf(p)).landPerAcre)}/acre, ${st.rain} of rain, a growing season of ${st.growing}, and winter lows of ${st.winterLow}. ${st.upside}.`}
             </Text>
             <Text>
               <Text weight="semibold">Water rights.</Text>{" "}
