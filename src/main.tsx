@@ -6,7 +6,7 @@ import { Pill, Row, Text, useCanvasState } from "./ui";
 import { useTheme, type ThemeMode } from "./theme";
 import "./styles.css";
 
-type Tab = "plan" | "land";
+type Tab = "plan" | "sustain" | "land";
 
 const THEMES: { id: ThemeMode; label: string }[] = [
   { id: "auto", label: "Auto" },
@@ -23,6 +23,9 @@ function Root() {
         <Pill active={tab === "plan"} onClick={() => setTab("plan")}>
           Retirement plan
         </Pill>
+        <Pill active={tab === "sustain"} onClick={() => setTab("sustain")}>
+          Self-reliance
+        </Pill>
         <Pill active={tab === "land"} onClick={() => setTab("land")}>
           Land search
         </Pill>
@@ -36,15 +39,15 @@ function Root() {
           </Pill>
         ))}
       </Row>
-      {tab === "plan" ? (
-        <App />
-      ) : (
+      {tab === "land" ? (
         <LandSearch
           onUseInPlan={(state, price, acres) => {
             loadListingIntoPlan(state, price, acres);
             setTab("plan");
           }}
         />
+      ) : (
+        <App part={tab === "sustain" ? "sustain" : "plan"} />
       )}
     </>
   );

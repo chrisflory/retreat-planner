@@ -1315,7 +1315,7 @@ export function loadListingIntoPlan(state: StateId | null, price: number, acres:
   localStorage.setItem("retreat-planner:recurring-v2", JSON.stringify(rec));
 }
 
-export default function RetreatPlan() {
+export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustain" }) {
   const [storedP, setP] = useCanvasState<Params>("params-v2", DEFAULT_PARAMS);
   const [storedUp, setUp] = useCanvasState<Record<string, number>>("upfront-v2", PRESET_PLANNED);
   const [storedRec, setRec] = useCanvasState<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
@@ -1610,6 +1610,8 @@ export default function RetreatPlan() {
 
   return (
     <Stack gap={24} style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
+      {part !== "sustain" && (
+      <>
       <Stack gap={6}>
         <H1>{st.name} land retreat: retirement cash plan</H1>
         <Text tone="secondary">
@@ -1618,7 +1620,7 @@ export default function RetreatPlan() {
           the charts recompute as you type. Taxes use 2026 federal brackets plus {st.name} state tax (
           {st.taxNote})
           {p.txMove ? ", except that the first year's withdrawal is taken while you're still a Texas resident" : ""}.
-          These are planning estimates, not tax advice.
+          These are planning estimates, not tax advice. Chickens, the garden, hunting, water and the grid-down plan are on the Self-reliance tab. The switches here still change those costs.
         </Text>
       </Stack>
 
@@ -2462,6 +2464,18 @@ export default function RetreatPlan() {
           </Stack>
         </Grid>
       </Stack>
+      </>
+      )}
+
+      {part === "sustain" && (
+      <>
+      <Stack gap={6}>
+        <H1>Self-reliance: food, water and staying alive</H1>
+        <Text tone="secondary">
+          Chickens, a garden, hunting, the well, and what still works if the bills stop. Turning something off here
+          takes it out of the retirement plan too. The dollar boxes are the same ones as on that tab.
+        </Text>
+      </Stack>
 
       <Stack gap={12}>
         <H2>Water for the RV: refilling, drinking and showers</H2>
@@ -2915,7 +2929,10 @@ export default function RetreatPlan() {
           already budgeted: the storm shelter, pole barn, tractor, well, rain catchment and northern-winter shelter.
         </Text>
       </Stack>
+      </>
+      )}
 
+      {part !== "sustain" && (
       <Stack gap={12}>
         <H2>{st.name}-specific notes</H2>
         <Grid columns={2} gap={16}>
@@ -2952,6 +2969,7 @@ export default function RetreatPlan() {
           </Stack>
         </Grid>
       </Stack>
+      )}
     </Stack>
   );
 }
