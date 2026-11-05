@@ -40,14 +40,13 @@ jobs:
 
       - run: npm ci
 
+      # Build only. Installers are attached with gh release create.
+      # tagName here uploads a second copy of each file onto that release.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: --bundles ${{ matrix.bundles }}
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: Retreat Planner ${{ github.ref_name }}
-          releaseDraft: true
 
       - uses: actions/upload-artifact@v4
         with:
