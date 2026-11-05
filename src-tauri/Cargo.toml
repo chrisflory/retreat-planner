@@ -1,6 +1,6 @@
 [package]
 name = "retreat-planner"
-version = "1.9.4"
+version = "1.9.5"
 description = "Retirement survival-retreat cash and hazard planner"
 edition = "2021"
 

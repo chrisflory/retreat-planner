@@ -1,0 +1,9 @@
+[Desktop Entry]
+Categories=Office;Finance;
+Comment=Retirement survival-retreat planner
+Exec=retreat-planner
+StartupWMClass=retreat-planner
+Icon=retreat-planner
+Name=Retreat Planner
+Terminal=false
+Type=Application
