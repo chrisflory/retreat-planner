@@ -28,6 +28,7 @@ import {
 type Status = "mfj" | "single";
 type Strategy = "lump" | "split" | "asNeeded";
 type PowerMode = "grid" | "hybrid" | "offgrid" | "offgridAC";
+type HeatMode = "propane" | "both" | "wood";
 
 const isLump = (p: { strategy: Strategy }) => p.strategy !== "asNeeded";
 
@@ -61,6 +62,7 @@ type Params = {
   loanRate: number;
   loanYears: number;
   powerMode: PowerMode;
+  heat: HeatMode;
 };
 
 type StateId = "OK" | "MT" | "WY" | "ID" | "SD" | "ND" | "TN" | "AR" | "MO" | "WV" | "MS";
@@ -238,6 +240,255 @@ const STATES: Record<StateId, StateInfo> = {
 const STATE_IDS = Object.keys(STATES) as StateId[];
 const NO_INCOME_TAX = new Set<StateId>(["WY", "SD", "TN"]);
 
+type StateLocal = {
+  cords: number;
+  ownWood: boolean;
+  woodNote: string;
+  summerHigh: string;
+  solar: [number, number];
+  coops: string;
+  well: string;
+  septic: string;
+  pad: string;
+  rvLiving: string;
+  propertyTax: string;
+  medicaid: string;
+  dmv: string;
+  forms: string;
+  wildlife: string;
+  site: string;
+  huntIntro: string;
+  deerRules: string;
+  hogRules: string;
+  seniorRules: string;
+};
+
+const LOCAL: Record<StateId, StateLocal> = {
+  OK: {
+    cords: 3, ownWood: true, woodNote: "Post oak and hickory timber regrows about ½–1 cord per acre per year",
+    summerHigh: "July–August highs over 100°F", solar: [3, 6],
+    coops: "Kiamichi Electric or Choctaw Electric in SE Oklahoma",
+    well: "~150–300 ft; Oklahoma drillers run ~$30–50/ft installed",
+    septic: "Needs a DEQ permit. Aerobic systems are common on Oklahoma clay soils",
+    pad: "Red clay turns to mud; gravel is not optional",
+    rvLiving: "Most rural counties have no zoning, but any dwelling with plumbing needs a DEQ-permitted septic system",
+    propertyTax: "Oklahoma assesses 11–13.5% of market value at roughly 80–100 mills. That puts raw land at $75K around $400–800/yr, and an agricultural-use valuation can lower it further. Apply for the homestead exemption with the county assessor by March 15; it needs a permanent dwelling, so an RV may not qualify. At 65 you can freeze the assessed value if household income is under the county limit",
+    medicaid: "In low-income years you may qualify for SoonerCare, Oklahoma's Medicaid expansion, which has no asset test",
+    dmv: "Get an Oklahoma driver's license at Service Oklahoma",
+    forms: "Oklahoma Form 511-NR as a part-year resident, then Form 511 each year after. Have the plan withhold Oklahoma tax (Form OK-W-4-R), or pay quarterly with Form OW-8-ES if you'll owe $1,000 or more. Oklahoma excludes $10K a person of retirement income and doesn't tax Social Security",
+    wildlife: "ODWC", site: "wildlifedepartment.com",
+    huntIntro: "Eastern and southeastern Oklahoma have strong deer numbers and some of the densest feral hog populations in the country. Hogs are the better long-term food source. They have no season and no bag limit, they breed two litters a year, and they carry fat, which lean venison lacks. In a collapse, local deer would be hunted out within a few seasons. By 1917, unregulated hunting had left only a few hundred deer in all of Oklahoma.",
+    deerRules: "Archery runs roughly Oct 1 to Jan 15, muzzleloader in late October, and rifle for about two weeks around Thanksgiving. The yearly limit has been about 6 deer with no more than 2 bucks. Every deer must be checked in through ODWC's E-check within 24 hours. Resident landowners get some license exemptions on their own land, but tagging and E-check still apply",
+    hogRules: "No closed season and no bag limit on private land. Shooting hogs at night with lights or thermal requires a free feral swine control permit from ODWC. Moving live feral hogs is heavily restricted by the Oklahoma Department of Agriculture (ODAFF)",
+    seniorRules: "Oklahoma residents 64 and older can buy an inexpensive senior lifetime hunting and fishing license",
+  },
+  MT: {
+    cords: 8, ownWood: true, woodNote: "Foothill pine and fir; you may need a few cords hauled in until your own trees are thinned",
+    summerHigh: "Highs in the 90s with cool nights", solar: [1.5, 6.5],
+    coops: "Fergus Electric or Yellowstone Valley Electric in central Montana",
+    well: "~100–400 ft; ~$40–60/ft installed. File a water-right notice with DNRC for an exempt domestic well",
+    septic: "Needs a county health department permit and a frost-protected design",
+    pad: "Gumbo clay and rock; gravel and good drainage are essential",
+    rvLiving: "Most rural counties have little zoning. A septic permit comes from the county sanitarian. Plan on the insulated shelter becoming the winter home",
+    propertyTax: "Montana taxes most homes at about 1.35% of market value times local mills, but land that qualifies as agricultural (generally 20+ acres in production) is taxed on what it produces. Raw 50 acres often runs $500–1,200/yr. Low-income residents can apply for property tax assistance",
+    medicaid: "Montana kept its Medicaid expansion, so in low-income years you may qualify",
+    dmv: "Get a Montana driver's license at a Motor Vehicle Division office",
+    forms: "Montana Form 2 as a part-year resident, then each year after. Montana taxes most retirement income, with a deduction for taxpayers 65 and older",
+    wildlife: "Montana FWP", site: "fwp.mt.gov",
+    huntIntro: "Central Montana has some of the best big-game hunting in the country: elk, mule deer, whitetail and antelope. One elk yields about four deer's worth of meat. There are no feral hogs, so there is no year-round meat source and very little fat in the diet.",
+    deerRules: "General archery runs from early September to mid-October, and the general rifle season runs about five weeks from late October through the weekend after Thanksgiving. Residents can buy a general deer and elk license over the counter. You need 180 days of residency before you qualify for resident licenses",
+    hogRules: "Montana has no feral hogs and works to keep it that way. Report any sighting to the Department of Livestock",
+    seniorRules: "Residents 62 and older get discounted conservation, base hunting and fishing licenses",
+  },
+  WY: {
+    cords: 8, ownWood: false, woodNote: "Little timber on basin and plains land; plan to buy firewood or cut on national forest with a permit",
+    summerHigh: "Highs in the 80s and 90s with dry wind", solar: [2.5, 6.5],
+    coops: "Big Horn Rural Electric or High Plains Power",
+    well: "~200–600 ft; ~$40–70/ft. Every well needs a State Engineer permit before drilling",
+    septic: "Needs a DEQ or county small-wastewater permit",
+    pad: "Bentonite gumbo turns slick when wet; build up the pad with gravel",
+    rvLiving: "Few counties zone rural land. Septic permits come from DEQ or the county. The insulated shelter carries you through winter",
+    propertyTax: "Wyoming assesses homes at 9.5% of value, about 0.6% a year with typical levies. Land in agricultural use is valued on what it produces, often a few dollars an acre. Long-time residents can apply for a homeowner's exemption",
+    medicaid: "Wyoming hasn't expanded Medicaid. If your income falls below the poverty line, you can't get ACA subsidies or Medicaid, so keep reported income above about $15,650",
+    dmv: "Get a Wyoming driver's license at a WYDOT driver services office",
+    forms: "None. Wyoming has no income tax",
+    wildlife: "Wyoming Game and Fish", site: "wgfd.wyo.gov",
+    huntIntro: "Wyoming has elk, mule deer and antelope, and some of the highest antelope numbers anywhere. There are no feral hogs. Many licenses are by draw, so meat is not guaranteed every year.",
+    deerRules: "Residents can buy general deer and elk licenses over the counter for general hunt areas, and limited-quota areas are by draw. Seasons vary by hunt area, mostly September to November. You need a full year of residency for resident licenses",
+    hogRules: "No feral hogs. Report any sighting to Game and Fish",
+    seniorRules: "Lifetime licenses are discounted only after many years of residency. Check the current fee schedule",
+  },
+  ID: {
+    cords: 6, ownWood: true, woodNote: "North Idaho fir, larch and pine timber; firewood is plentiful",
+    summerHigh: "Highs in the 80s and 90s; wildfire smoke in August", solar: [1, 6],
+    coops: "Northern Lights Inc. in the north Idaho panhandle",
+    well: "~100–400 ft; ~$40–60/ft. Your driller files the start card with IDWR",
+    septic: "Needs a permit from your public health district (Panhandle Health in the north)",
+    pad: "Spring mud season and snowmelt; gravel and ditching are essential",
+    rvLiving: "Bonner and Boundary counties have zoning, and some limit how long an RV can be lived in. Check with county planning before you buy",
+    propertyTax: "Idaho's homeowner exemption takes 50% (up to $125K) off the value of your primary home once it's built. Bare land isn't covered; rural levies run about 0.6–1%. Residents 65+ with low income can get property tax reduction (circuit breaker)",
+    medicaid: "Idaho expanded Medicaid, so in low-income years you may qualify",
+    dmv: "Get an Idaho driver's license at the county DMV office",
+    forms: "Idaho Form 43 as a part-year resident, then Form 40 each year after. Idaho taxes 401(k) withdrawals at 5.3% and doesn't tax Social Security",
+    wildlife: "IDFG", site: "idfg.idaho.gov",
+    huntIntro: "North Idaho has elk, whitetail and mule deer, bear and moose. There are no feral hogs. Timber hunting is harder than open country, but game is plentiful.",
+    deerRules: "General deer and elk tags are sold over the counter to residents. Most general rifle seasons run October to mid-November, with archery in September. Report every harvest within 10 days. You need six months of residency for resident licenses",
+    hogRules: "No feral hogs. Idaho bans possessing or releasing them",
+    seniorRules: "Residents 65 and older with 5 years of residency can buy discounted senior licenses",
+  },
+  SD: {
+    cords: 9, ownWood: false, woodNote: "West River ranch land has few trees; buy firewood or rely on propane",
+    summerHigh: "Highs in the 90s, sometimes over 100°F", solar: [2, 6.5],
+    coops: "West River Electric or Black Hills Electric",
+    well: "~200–1,000 ft into deep aquifers West River; ~$35–60/ft",
+    septic: "Needs a permit under state DANR rules, through the county",
+    pad: "Gumbo clay is impassable when wet; gravel is essential",
+    rvLiving: "Many counties have agricultural zoning but allow a dwelling on large parcels. South Dakota is also an easy domicile state for RVers",
+    propertyTax: "Owner-occupied homes get a lower rate, and agricultural land is assessed on productivity. Residents 65+ with low income can freeze their assessed value",
+    medicaid: "South Dakota expanded Medicaid by voter amendment, so in low-income years you may qualify",
+    dmv: "Get a South Dakota driver's license at a Driver Licensing office",
+    forms: "None. South Dakota has no income tax",
+    wildlife: "SD Game, Fish and Parks", site: "gfp.sd.gov",
+    huntIntro: "West River South Dakota has mule deer, whitetail, antelope and pheasant. There are no feral hogs. Most deer licenses are by lottery.",
+    deerRules: "Most rifle deer licenses are drawn by lottery, with landowner preference on your own land. The West River rifle season runs mid-November. You need 90 days of residency for resident licenses",
+    hogRules: "No established feral hogs. Report any sighting",
+    seniorRules: "Check for discounted senior fishing and combination licenses",
+  },
+  ND: {
+    cords: 10, ownWood: false, woodNote: "Few trees outside river breaks; buy firewood or rely on propane",
+    summerHigh: "Highs in the 90s", solar: [1.8, 6.5],
+    coops: "Roughrider Electric or Mor-Gran-Sou Electric",
+    well: "~100–400 ft; ~$35–55/ft",
+    septic: "Needs a permit from the district health unit",
+    pad: "Clay gumbo; gravel is essential",
+    rvLiving: "Township and county zoning are common. Check before you buy",
+    propertyTax: "Agricultural land is valued on productivity. Residents 65+ with low income get a homestead credit, and the state now credits primary residences",
+    medicaid: "North Dakota expanded Medicaid, so in low-income years you may qualify",
+    dmv: "Get a North Dakota driver's license at an NDDOT driver license site",
+    forms: "North Dakota Form ND-1 with Schedule ND-1NR as a part-year resident, then Form ND-1 each year after. Little or no tax is due on modest withdrawals",
+    wildlife: "NDGF", site: "gf.nd.gov",
+    huntIntro: "Western North Dakota has whitetail and mule deer, antelope and waterfowl. There are no feral hogs. Deer licenses are by lottery.",
+    deerRules: "Deer gun licenses are drawn by lottery, and landowners on 150+ acres can get gratis licenses. The rifle season runs about 16 days from early November. You need six months of residency for resident licenses",
+    hogRules: "No feral hogs. North Dakota bans possessing them",
+    seniorRules: "Check for discounted senior fishing licenses",
+  },
+  TN: {
+    cords: 3, ownWood: true, woodNote: "Oak-hickory hardwood timber regrows about 1 cord per acre per year",
+    summerHigh: "Highs in the 90s with high humidity", solar: [2.5, 5.5],
+    coops: "Volunteer Energy Cooperative or Sequachee Valley Electric",
+    well: "~150–400 ft in limestone; ~$25–45/ft",
+    septic: "Needs a TDEC permit after a soil test. Shallow rock on the Cumberland Plateau can raise the cost",
+    pad: "Clay over rock; gravel is essential",
+    rvLiving: "Some counties restrict living full-time in an RV. Check with the county before you buy",
+    propertyTax: "Residential property is assessed at 25% of appraised value. Greenbelt classification (15+ acres in farm or forest use) lowers it a lot. Residents 65+ with low income can get tax relief or a freeze",
+    medicaid: "Tennessee hasn't expanded Medicaid. If your income falls below the poverty line, you can't get ACA subsidies or TennCare, so keep reported income above about $15,650",
+    dmv: "Get a Tennessee driver's license at a Driver Services Center",
+    forms: "None. Tennessee has no income tax",
+    wildlife: "TWRA", site: "tnwildlife.org",
+    huntIntro: "Tennessee has strong whitetail and turkey numbers on the Cumberland Plateau. TWRA restricts hog hunting, so deer are the main meat source.",
+    deerRules: "Archery starts in late September, and the rifle season runs from late November into early January. The limit is generous: several antlerless deer plus 2 bucks. Check every deer by midnight of the day you take it. Landowners can hunt their own land without a license",
+    hogRules: "Sport hunting of hogs is mostly banned. Landowners can kill hogs on their own land and can get an exemption permit for trapping and night shooting",
+    seniorRules: "Residents 65 and older can buy a discounted Senior Citizen permanent hunting and fishing license",
+  },
+  AR: {
+    cords: 3, ownWood: true, woodNote: "Oak-hickory and pine timber; firewood is plentiful",
+    summerHigh: "Highs in the upper 90s with high humidity", solar: [2.8, 5.5],
+    coops: "Ozarks Electric, Carroll Electric or Ouachita Electric",
+    well: "~300–600 ft in Ozark and Ouachita hard rock; ~$25–40/ft",
+    septic: "Needs a Health Department permit, designed by a licensed designated representative",
+    pad: "Rocky clay; gravel and culverts for runoff",
+    rvLiving: "Most rural Ozark and Ouachita counties have no zoning. You still need a permitted septic system",
+    propertyTax: "Property is assessed at 20% of market value, with a homestead credit of about $500 on your home. At 65 you can freeze the assessed value of your homestead",
+    medicaid: "Arkansas expanded Medicaid (ARHOME), so in low-income years you may qualify",
+    dmv: "Get an Arkansas driver's license at a State Police driver testing site, and register vehicles at a DFA revenue office",
+    forms: "Arkansas Form AR1000NR as a part-year resident, then Form AR1000F each year after. The first $6K of retirement income is exempt",
+    wildlife: "AGFC", site: "agfc.com",
+    huntIntro: "The Ozarks and Ouachitas have good deer numbers and plenty of feral hogs, plus turkey and a small elk herd. This is the closest match to SE Oklahoma.",
+    deerRules: "Archery starts in late September, and the modern-gun season runs most of November and December, depending on the zone. Check every deer through AGFC's app or by phone within 12 hours. You need 60 days of residency for resident licenses",
+    hogRules: "Feral hogs are a public nuisance. Landowners can kill them on their own land at any time. On public land, take them only incidentally while hunting other game",
+    seniorRules: "Residents 65 and older can buy an inexpensive lifetime hunting and fishing license",
+  },
+  MO: {
+    cords: 4, ownWood: true, woodNote: "Ozark oak-hickory timber; firewood is plentiful",
+    summerHigh: "Highs in the upper 90s with humidity", solar: [2.3, 5.5],
+    coops: "Howell-Oregon Electric or Intercounty Electric in the Ozarks",
+    well: "~300–600 ft in Ozark limestone, cased to state standards; ~$30–45/ft",
+    septic: "Needs a permit from the county health department or DHSS",
+    pad: "Rocky clay; gravel is essential",
+    rvLiving: "Most rural Ozark counties have no zoning",
+    propertyTax: "Residential property is assessed at 19% and agricultural land at 12% of its productive value. Counties can freeze taxes for homeowners 62 and older",
+    medicaid: "Missouri expanded Medicaid (MO HealthNet) by voter amendment, so in low-income years you may qualify",
+    dmv: "Get a Missouri driver's license at a DOR license office",
+    forms: "Missouri Form MO-1040 with Form MO-NRI as a part-year resident, then MO-1040 each year after. Missouri doesn't tax Social Security",
+    wildlife: "MDC", site: "mdc.mo.gov",
+    huntIntro: "The Missouri Ozarks have good deer and turkey numbers. Missouri is eradicating feral hogs, so they aren't a dependable meat source.",
+    deerRules: "Archery runs mid-September to mid-January, and the main firearms season runs about 11 days in mid-November. Telecheck every deer by 10 p.m. the day you take it. Resident landowners with 5+ acres get free deer and turkey permits for their own land",
+    hogRules: "Hunting feral hogs is banned. Landowners can kill hogs on their own land, and MDC helps with trapping",
+    seniorRules: "Residents 65 and older don't need small-game hunting or fishing permits",
+  },
+  WV: {
+    cords: 4, ownWood: true, woodNote: "Mixed hardwood timber; firewood is plentiful",
+    summerHigh: "Highs in the upper 80s with humidity", solar: [2, 5],
+    coops: "Mon Power or Appalachian Power; there are few co-ops",
+    well: "~100–300 ft; ~$25–40/ft",
+    septic: "Needs a county health department permit; steep slopes can make it harder",
+    pad: "Steep, with mud and slides; gravel and ditching are essential",
+    rvLiving: "Most rural counties have no zoning",
+    propertyTax: "Property is assessed at 60% of value with low rural levies. The homestead exemption takes $20K off at 65",
+    medicaid: "West Virginia expanded Medicaid, so in low-income years you may qualify",
+    dmv: "Get a West Virginia driver's license at a DMV regional office",
+    forms: "West Virginia Form IT-140 with Schedule A as a part-year resident, then IT-140 each year after. West Virginia no longer taxes Social Security",
+    wildlife: "WVDNR", site: "wvdnr.gov",
+    huntIntro: "West Virginia has deer, black bear and turkey, and no feral hogs to speak of. Steep hollows make hunting and packing out harder.",
+    deerRules: "Archery runs late September to December, and the buck firearms season runs two weeks starting the Monday before Thanksgiving. Check every deer electronically within 72 hours. You need 30 days of residency for resident licenses",
+    hogRules: "No established feral hogs. A few native wild boar exist in the south, with limited seasons",
+    seniorRules: "Residents 65 and older can buy a discounted lifetime license",
+  },
+  MS: {
+    cords: 2, ownWood: true, woodNote: "Pine and hardwood timber; firewood is plentiful",
+    summerHigh: "Highs in the upper 90s with high humidity", solar: [3, 5.5],
+    coops: "4-County Electric or Central Electric",
+    well: "~100–400 ft in sand aquifers; ~$20–40/ft",
+    septic: "Needs a permit from the State Department of Health",
+    pad: "Loess and clay; gravel is essential",
+    rvLiving: "Most rural counties have little zoning",
+    propertyTax: "Homes are assessed at 10% of value once you file for homestead. At 65 the first $75K of home value is exempt from most levies",
+    medicaid: "Mississippi hasn't expanded Medicaid. If your income falls below the poverty line, you can't get ACA subsidies or Medicaid, so keep reported income above about $15,650",
+    dmv: "Get a Mississippi driver's license at a Driver Service Bureau",
+    forms: "Mississippi Form 80-205 as a part-year resident, then Form 80-105 each year after. Qualified retirement income is exempt, but check early (pre-59½) withdrawals with a CPA",
+    wildlife: "MDWFP", site: "mdwfp.com",
+    huntIntro: "Mississippi has strong deer and turkey numbers and plenty of feral hogs, with the longest seasons on this list.",
+    deerRules: "Archery starts October 1, and gun seasons run from mid-November into January, depending on the zone. Report every deer through MDWFP's harvest app. You need 6 months of residency for resident licenses",
+    hogRules: "Landowners can kill hogs on their own land at any time, and can shoot at night with a permit",
+    seniorRules: "Residents 65 and older can get a free lifetime exempt license",
+  },
+};
+
+const HEAT: Record<HeatMode, { label: string; summary: string }> = {
+  propane: { label: "Propane", summary: "The RV furnace and appliances run on propane. It's easy, but it's the costliest heat and depends on deliveries." },
+  both: { label: "Wood stove, propane backup", summary: "A wood stove carries most of the winter. Propane covers cooking, hot water, the fridge and cold snaps when you're away or sick." },
+  wood: { label: "Wood only (propane for cooking)", summary: "All heat from wood. Propane only for cooking, hot water and the fridge, so a small tank lasts most of a year." },
+};
+const HEAT_IDS = Object.keys(HEAT) as HeatMode[];
+const FIREWOOD_OWN_PER_CORD = 40;
+const FIREWOOD_BUY_PER_CORD = 275;
+
+function heatPlan(id: StateId, mode: HeatMode) {
+  const s = STATES[id];
+  const l = LOCAL[id];
+  const baseGal = s.winterShelter > 0 ? 250 : 150;
+  const propaneGal =
+    mode === "propane" ? s.propaneGal : mode === "both" ? Math.round(baseGal + 0.25 * (s.propaneGal - baseGal)) : baseGal;
+  const cords = mode === "propane" ? 0 : mode === "both" ? Math.ceil(l.cords * 0.8) : l.cords;
+  const perCord = l.ownWood ? FIREWOOD_OWN_PER_CORD : FIREWOOD_BUY_PER_CORD;
+  return {
+    propaneGal,
+    cords,
+    firewood: cords * perCord,
+    stove: mode === "propane" ? 0 : s.winterShelter > 0 ? 3500 : 2500,
+  };
+}
+
 type HazardCat = "Weather" | "Fire + drought" | "Wildlife + insects" | "Geologic + tropical";
 const HAZARDS: Array<{ id: string; label: string; cat: HazardCat }> = [
   { id: "tornado", label: "Tornado", cat: "Weather" },
@@ -296,10 +547,17 @@ function applyState(
   rec: Record<string, number>,
 ): [Params, Record<string, number>, Record<string, number>] {
   const s = STATES[id];
+  const h = heatPlan(id, p.heat ?? "propane");
   return [
     { ...p, state: id, hogsPerYear: s.hogs, elkPerYear: s.elk },
-    { ...up, land: s.landPerAcre * 50, winter: s.winterShelter },
-    { ...rec, propane: Math.round(s.propaneGal * PROPANE_PRICE), proptax: s.propTax },
+    {
+      ...up,
+      land: s.landPerAcre * 50,
+      winter: s.winterShelter,
+      woodheat: h.stove,
+      hogtrap: s.hogs > 0 ? up.hogtrap || PRESET_PLANNED.hogtrap : 0,
+    },
+    { ...rec, propane: Math.round(h.propaneGal * PROPANE_PRICE), firewood: h.firewood, proptax: s.propTax },
   ];
 }
 
@@ -333,6 +591,7 @@ const DEFAULT_PARAMS: Params = {
   loanRate: 7,
   loanYears: 15,
   powerMode: "grid",
+  heat: "propane",
 };
 
 const POWER: Record<
@@ -423,7 +682,7 @@ const UPFRONT: UpfrontItem[] = [
   { id: "rv", label: "Used RV", note: "Look for a 4-season unit; it lives outdoors through ice storms and 100°F summers", hardening: false },
   { id: "closing", label: "Closing, survey, title", note: "Rural tracts often need a new survey", hardening: false },
   { id: "well", label: "Drilled well + pump", note: "~150–300 ft; Oklahoma drillers run ~$30–50/ft installed", hardening: false },
-  { id: "septic", label: "Septic + DEQ permit", note: "Aerobic systems are common on Oklahoma clay soils", hardening: false },
+  { id: "septic", label: "Septic + permit", note: "Aerobic systems are common on Oklahoma clay soils", hardening: false },
   { id: "power", label: "Grid line drop / extension + meter", note: "$2–10K if a co-op line runs along the road; co-ops charge roughly $15–40K per mile beyond that. $0 off-grid", hardening: false },
   { id: "rvhookup", label: "RV pedestal: 50 A outlet, frost-free hydrant, sewer cleanout", note: "Hooks the RV to power, the well and the septic so you aren't hauling water or dumping tanks", hardening: false },
   { id: "starlink", label: "Starlink kit + pole or roof mount", note: "Mount it clear of trees with an open view of the northern sky", hardening: false },
@@ -433,6 +692,7 @@ const UPFRONT: UpfrontItem[] = [
   { id: "shelter", label: "In-ground storm shelter", note: "An RV is the worst place to be in a tornado", hardening: false },
   { id: "safety", label: "Safety kit: satellite SOS, NOAA radio, CO/smoke alarms, extinguishers, snake gaiters, bear spray, tourniquet", note: "Living alone, an SOS device is how you call for help after a bite, fall or chainsaw cut", hardening: false },
   { id: "propane", label: "500-gal propane tank (owned) + fill", note: "Owning the tank lets you shop suppliers", hardening: false },
+  { id: "woodheat", label: "Wood stove, insulated chimney, hearth pad, splitting maul", note: "", hardening: false },
   { id: "tractor", label: "Used compact tractor, brush hog, chainsaw", note: "50 acres turns to brush in 2–3 seasons without one", hardening: false },
   { id: "fence", label: "Fence repair + gate", note: "", hardening: false },
   { id: "handpump", label: "Well hand pump (Simple Pump / Bison)", note: "Electric well pumps stop when the grid does", hardening: true },
@@ -455,7 +715,7 @@ const UPFRONT: UpfrontItem[] = [
 const PRESET_PLANNED: Record<string, number> = {
   land: 75000, winter: 0, rv: 40000, closing: 3000, well: 15000, septic: 9000, power: 10000,
   rvhookup: 2500, starlink: 500, generator: 1200, pad: 5000,
-  barn: 10000, shelter: 5000, safety: 1200, propane: 3500, tractor: 10000, fence: 5000,
+  barn: 10000, shelter: 5000, safety: 1200, propane: 3500, woodheat: 0, tractor: 10000, fence: 5000,
   handpump: 3000, offgrid: 15000, cabin: 15000, food: 3000, garden: 4000, rain: 3000,
   medical: 1000, comms: 2500, fuel: 3000,
   rifle: 1000, hogtrap: 1500, stand: 600, butcher: 500, freezer: 700, canner: 700,
@@ -464,7 +724,7 @@ const PRESET_PLANNED: Record<string, number> = {
 const PRESET_LEAN: Record<string, number> = {
   land: 75000, winter: 0, rv: 30000, closing: 2500, well: 12000, septic: 7000, power: 6000,
   rvhookup: 1500, starlink: 400, generator: 800, pad: 3000,
-  barn: 0, shelter: 4000, safety: 800, propane: 3000, tractor: 5000, fence: 0,
+  barn: 0, shelter: 4000, safety: 800, propane: 3000, woodheat: 0, tractor: 5000, fence: 0,
   handpump: 2500, offgrid: 8000, cabin: 6000, food: 2000, garden: 2000, rain: 1500,
   medical: 750, comms: 1000, fuel: 2000,
   rifle: 0, hogtrap: 800, stand: 200, butcher: 300, freezer: 500, canner: 450,
@@ -478,7 +738,8 @@ const RECURRING: RecurringItem[] = [
   { id: "hunt", label: "Hunting: licenses, tags, ammo, feed corn", rule: "all", collapse: "Stockpiled ammo; traps need none" },
   { id: "water", label: "Water: well testing, filters", rule: "all", collapse: "Hand pump, rain catchment, pond + filter" },
   { id: "proptax", label: "Property tax", rule: "all", collapse: "Not collected" },
-  { id: "propane", label: "Propane (~500 gal/yr; RV furnace in winter)", rule: "all", collapse: "Stored propane, then firewood" },
+  { id: "propane", label: "Propane", rule: "all", collapse: "Stored propane, then firewood" },
+  { id: "firewood", label: "Firewood", rule: "all", collapse: "Cut your own with a bow saw and axe once gas runs out" },
   { id: "electric", label: "Electricity (grid bill, or generator fuel off-grid)", rule: "all", collapse: "Solar for essentials only, no A/C" },
   { id: "gas", label: "Gasoline (~5,000 mi/yr + mower)", rule: "all", collapse: "Gone in 6–12 months; walk or stay put" },
   { id: "autoins", label: "Vehicle insurance + tags", rule: "all", collapse: "Not needed" },
@@ -498,10 +759,37 @@ const RECURRING: RecurringItem[] = [
 ];
 
 const RECURRING_DEFAULTS: Record<string, number> = {
-  food: 3600, hunt: 400, water: 300, proptax: 500, propane: 1500, electric: 1500, gas: 1000, autoins: 1400,
+  food: 3600, hunt: 400, water: 300, proptax: 500, propane: 1500, firewood: 0, electric: 1500, gas: 1000, autoins: 1400,
   rvins: 1000, liability: 500, aca: 3000, medicare: 4750, oop: 750, sos: 200, internet: 1900, maint: 2500,
   septic: 200, household: 1200, garden: 800, trash: 200, rvreserve: 2500,
 };
+
+const LIVING_PRESETS: Record<"bare" | "modest" | "comfortable", { label: string; note: string; values: Record<string, number> }> = {
+  bare: {
+    label: "Bare-bones",
+    note: "Liability-only truck insurance, a $0-premium Medicare Advantage plan at 65, Starlink's cheapest plan, doing your own repairs, no RV replacement fund",
+    values: {
+      food: 2400, hunt: 250, water: 100, gas: 600, autoins: 700, rvins: 500, liability: 200, aca: 600, medicare: 2500,
+      oop: 400, sos: 180, internet: 1100, maint: 1000, septic: 100, household: 600, garden: 200, trash: 100, rvreserve: 0,
+    },
+  },
+  modest: {
+    label: "Modest",
+    note: "Careful spending with some cushion for repairs and the RV wearing out",
+    values: {
+      food: 3000, hunt: 300, water: 200, gas: 800, autoins: 1000, rvins: 750, liability: 350, aca: 1800, medicare: 3600,
+      oop: 600, sos: 180, internet: 1500, maint: 1800, septic: 150, household: 900, garden: 500, trash: 150, rvreserve: 1500,
+    },
+  },
+  comfortable: {
+    label: "Comfortable",
+    note: "The original estimates: full coverage insurance, Medigap Plan G at 65, regular RV replacement saving",
+    values: Object.fromEntries(
+      Object.entries(RECURRING_DEFAULTS).filter(([k]) => !["proptax", "propane", "firewood", "electric"].includes(k)),
+    ),
+  },
+};
+type LivingPreset = keyof typeof LIVING_PRESETS;
 
 const FED: Record<Status, { std: number; brackets: Array<[number, number]> }> = {
   mfj: {
@@ -720,7 +1008,7 @@ export function loadListingIntoPlan(state: StateId | null, price: number) {
   localStorage.setItem("retreat-planner:recurring-v2", JSON.stringify(rec));
 }
 
-export default function OklahomaRetreatPlan() {
+export default function RetreatPlan() {
   const [storedP, setP] = useCanvasState<Params>("params-v2", DEFAULT_PARAMS);
   const [storedUp, setUp] = useCanvasState<Record<string, number>>("upfront-v2", PRESET_PLANNED);
   const [storedRec, setRec] = useCanvasState<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
@@ -741,6 +1029,7 @@ export default function OklahomaRetreatPlan() {
       ...preset,
       land: up.land ?? preset.land,
       winter: up.winter ?? 0,
+      woodheat: up.woodheat ?? 0,
       ...(p.powerMode === "grid" ? {} : { power: up.power ?? 0, offgrid: up.offgrid ?? 0 }),
     });
   const pickPower = (mode: PowerMode) => {
@@ -748,6 +1037,36 @@ export default function OklahomaRetreatPlan() {
     set("powerMode", mode);
     setUp((prev) => ({ ...prev, power: m.power, offgrid: m.offgrid }));
     setRec((prev) => ({ ...prev, electric: m.electric }));
+  };
+  const heat = p.heat ?? "propane";
+  const hp = heatPlan(stateOf(p), heat);
+  const loc = LOCAL[stateOf(p)];
+  const pickHeat = (mode: HeatMode) => {
+    const h = heatPlan(stateOf(p), mode);
+    set("heat", mode);
+    setUp((prev) => ({ ...prev, woodheat: h.stove }));
+    setRec((prev) => ({ ...prev, propane: Math.round(h.propaneGal * PROPANE_PRICE), firewood: h.firewood }));
+  };
+  const applyLiving = (id: LivingPreset) => setRec((prev) => ({ ...prev, ...LIVING_PRESETS[id].values }));
+  const recLabel = (item: RecurringItem) => {
+    if (item.id === "propane")
+      return `Propane (~${hp.propaneGal.toLocaleString("en-US")} gal/yr at $${PROPANE_PRICE.toFixed(2)}: ${heat === "propane" ? "RV furnace, cooking, hot water" : heat === "both" ? "cooking, hot water, cold-snap backup" : "cooking, hot water, fridge"})`;
+    if (item.id === "firewood")
+      return loc.ownWood
+        ? `Firewood (~${hp.cords} cords/yr cut from your land: saw gas, chains, bar oil)`
+        : `Firewood (~${hp.cords} cords/yr bought at ~$${FIREWOOD_BUY_PER_CORD}/cord)`;
+    return item.label;
+  };
+  const upNote = (u: UpfrontItem) => {
+    if (u.id === "offgrid") return POWER[p.powerMode]?.solarNote ?? u.note;
+    if (u.id === "well") return loc.well;
+    if (u.id === "septic") return loc.septic;
+    if (u.id === "pad") return loc.pad;
+    if (u.id === "woodheat")
+      return heat === "propane"
+        ? `Set "Heat with" to wood to add this. ${loc.woodNote}`
+        : `${st.winterShelter > 0 ? "Goes in the insulated shelter" : "A small RV-rated stove, or one in the cabin"}. ${loc.woodNote}`;
+    return u.note;
   };
 
   const stateRows = STATE_IDS.map((id) => {
@@ -760,7 +1079,7 @@ export default function OklahomaRetreatPlan() {
       land: su.land ?? 0,
       total,
       lumpStateTax: Math.round(lumpSumTax({ ...sp, txMove: false }).ok),
-      propane: sr.propane ?? 0,
+      heating: (sr.propane ?? 0) + (sr.firewood ?? 0),
       cost: annualCost(sr, 60, sp, false),
       lasts: sim.depletedAge,
     };
@@ -815,13 +1134,22 @@ export default function OklahomaRetreatPlan() {
   const allocHunt = p.hunting ? huntTotal : 0;
   const allocRemaining = Math.max(0, p.k401 - allocTaxes - landRv - allocOther - allocHard - allocHunt);
 
-  const costRows = RECURRING.map((item) => [
-    item.label,
+  const shownRecurring = RECURRING.filter(
+    (i) => (i.id !== "firewood" || heat !== "propane" || (rec.firewood ?? 0) > 0) && (i.id !== "hunt" || p.hunting),
+  );
+  const costRows = shownRecurring.map((item) => [
+    recLabel(item),
     <NumField
-      key={item.id}
+      key={`${item.id}-mo`}
+      value={Math.round((rec[item.id] ?? 0) / 12)}
+      onChange={(n) => setRec((prev) => ({ ...prev, [item.id]: n * 12 }))}
+      width={72}
+    />,
+    <NumField
+      key={`${item.id}-yr`}
       value={rec[item.id] ?? 0}
       onChange={(n) => setRec((prev) => ({ ...prev, [item.id]: n }))}
-      width={88}
+      width={80}
     />,
     item.rule === "pre65" ? "Until 65" : item.rule === "post65" ? "65+" : "Every year",
     PER_PERSON_RECURRING.has(item.id) && adults > 1 ? money(recAmount(rec, item.id, p)) : "",
@@ -845,7 +1173,7 @@ export default function OklahomaRetreatPlan() {
           width={88}
         />,
         <Text size="small" tone="tertiary">
-          {u.id === "offgrid" ? pm.solarNote : u.note}
+          {upNote(u)}
         </Text>,
       ])}
     />
@@ -884,7 +1212,7 @@ export default function OklahomaRetreatPlan() {
         <Stat value={kMoney(netAfterTax)} label={isLump(p) ? "Cash after lump-sum tax" : "Kept in 401(k)/IRA"} />
         <Stat value={kMoney(upfrontTotal)} label="One-time setup (land, RV, build-out)" />
         <Stat value={kMoney(leftAfterSetup)} label={isLump(p) ? "Left after setup, before living costs" : "Left in account after year 1"} tone={leftAfterSetup < 100000 ? "warning" : undefined} />
-        <Stat value={`${money(steadyPre65)}/yr`} label="Living cost before 65, today's dollars" />
+        <Stat value={`${money(steadyPre65 / 12)}/mo`} label={`Living cost before 65 (${money(steadyPre65)}/yr), today's dollars`} />
       </Grid>
 
       <Grid columns="minmax(0, 320px) minmax(0, 1fr)" gap={20} align="start">
@@ -998,6 +1326,13 @@ export default function OklahomaRetreatPlan() {
                   value={p.powerMode}
                   onChange={(v) => pickPower(v as PowerMode)}
                   options={POWER_IDS.map((id) => ({ value: id, label: POWER[id].label }))}
+                />
+              </Field>
+              <Field label="Heat with">
+                <Select
+                  value={heat}
+                  onChange={(v) => pickHeat(v as HeatMode)}
+                  options={HEAT_IDS.map((id) => ({ value: id, label: HEAT[id].label }))}
                 />
               </Field>
               <Field label="Include collapse-hardening build">
@@ -1124,7 +1459,7 @@ export default function OklahomaRetreatPlan() {
                   {p.finance ? "Seller financing is switched on in Assumptions." : 'Switch on "Seller-finance the land" in Assumptions to apply it to the whole plan.'}
                 </Text>
                 <Callout tone="neutral" title="Doing seller financing safely">
-                  Many rural Oklahoma sellers offer it, typically 10–20% down, 6–9% interest and 5–15 years, sometimes with
+                  Many rural {st.name} sellers offer it, typically 10–20% down, 6–9% interest and 5–15 years, sometimes with
                   a balloon payment due early. Close through a title company or real-estate attorney. Get title
                   insurance, and have a recorded deed with a mortgage, not a contract for deed: under a contract for deed
                   the seller keeps title until the last payment. Ask for no prepayment penalty, so you can pay it off
@@ -1146,7 +1481,7 @@ export default function OklahomaRetreatPlan() {
           winter heating, property tax and game. Click a state name to load it into the planner.
         </Text>
         <Table
-          headers={["State", "50 ac land", "State tax on lump sum", "Propane/yr", "Living cost/yr", "Money lasts to", "Winter low", "Growing season", "Rain", "Medicaid expansion"]}
+          headers={["State", "50 ac land", "State tax on lump sum", `Heating/yr (${HEAT[heat].label.toLowerCase()})`, "Living cost/yr", "Money lasts to", "Winter low", "Growing season", "Rain", "Medicaid expansion"]}
           columnAlign={["left", "right", "right", "right", "right", "right", "left", "left", "left", "left"]}
           rowTone={stateRows.map((r) => (r.id === stateOf(p) ? "info" : undefined))}
           rows={stateRows.map((r) => [
@@ -1159,7 +1494,7 @@ export default function OklahomaRetreatPlan() {
               : p.txMove
               ? r.lumpStateTax > 0 ? `$0 in TX (saves ${kMoney(r.lumpStateTax)})` : "$0"
               : money(r.lumpStateTax),
-            money(r.propane),
+            money(r.heating),
             money(r.cost),
             r.lasts === null ? `${END_AGE}+` : String(r.lasts),
             r.s.winterLow,
@@ -1198,7 +1533,8 @@ export default function OklahomaRetreatPlan() {
               <Callout tone="warning" title="An RV alone won't get you through this winter">
                 Winters here reach {st.winterLow}. RV plumbing freezes, and a furnace can burn 10+ gallons of propane a
                 day. The plan adds {money(st.winterShelter)} for an insulated shelter and budgets{" "}
-                {st.propaneGal.toLocaleString("en-US")} gal/yr of propane.
+                {hp.propaneGal.toLocaleString("en-US")} gal/yr of propane
+                {hp.cords > 0 ? ` and ${hp.cords} cords of firewood` : ""}.
               </Callout>
             )}
           </Stack>
@@ -1285,11 +1621,10 @@ export default function OklahomaRetreatPlan() {
             ["Your last weeks in Texas", "Leave the job in or after the year you turn 55. Request the setup withdrawal with your Texas address on file and no state withholding. To split it, take half in December and half in January.", "Splitting puts each half in a lower federal bracket. Both halves are Texas income as long as you haven't moved yet."],
             ["Until the money is paid out", "Keep your Texas driver's license, voter registration, vehicle registration and mailing address. Buying the land is fine. Moving in is not.", `${st.name} decides residency by where your permanent home is. Acting like a resident early could make the withdrawal its income.`],
             ["Federal tax on the withdrawal", "The plan withholds 20% automatically. Pay the rest with IRS Direct Pay (Form 1040-ES) or with your return. Your 1099-R arrives in January.", "You avoid the underpayment penalty if withholding covers 100% of last year's tax, or 110% if last year's income was over $150K."],
-            ["Within 30 days of moving", stateOf(p) === "OK" ? "Get an Oklahoma driver's license at Service Oklahoma. Title and register the truck and RV, register to vote, and file IRS Form 8822 to change your address. Update Social Security and the 401(k) plan too." : `Get a ${st.name} driver's license. Title and register the truck and RV, register to vote, and file IRS Form 8822 to change your address. Update Social Security and the 401(k) plan too.`, "These records are how you prove your residency changed, and when."],
-            ["First April after the move", NO_INCOME_TAX.has(stateOf(p)) ? `File your federal 1040 as usual. ${st.name} has no income tax return to file. Texas has none either.` : stateOf(p) === "OK" ? "File your federal 1040 as usual. File Oklahoma Form 511-NR as a part-year resident, which taxes only income received after you moved. Texas has no return to file." : `File your federal 1040 as usual. File ${st.name}'s part-year resident return, which taxes only income received after you moved (${st.taxNote}). Texas has no return to file.`, "Moving mid-year means one part-year state return, not two."],
-            ["Every year after", NO_INCOME_TAX.has(stateOf(p)) ? "Federal return only." : stateOf(p) === "OK" ? "File Form 511 as a full-year resident, due April 15. For later 401(k) withdrawals, have the plan withhold Oklahoma tax (Form OK-W-4-R), or pay quarterly with Form OW-8-ES if you'll owe $1,000 or more. Oklahoma excludes $10K a person of retirement income and doesn't tax Social Security." : `File ${st.name}'s resident return. Have the plan withhold ${st.name} tax on later withdrawals, or pay quarterly estimates.`, "Later withdrawals are taxed by the state you live in when you take them."],
-            ["Property tax", stateOf(p) === "OK" ? "Apply for the homestead exemption with the county assessor by March 15. It needs a permanent dwelling, so an RV may not qualify until a cabin or manufactured home is assessed. The county treasurer bills you in the fall, with the full amount due December 31 (or half then and half by March 31)." : "Apply for the homestead exemption with the county assessor once you live there. It usually needs a permanent dwelling, not an RV.", "Paid to the county no matter which state's income tax applies."],
-            ["Health and hunting", "Moving to a new state lets you change ACA plans right away (60-day window), but only if you had coverage before you moved. Resident hunting licenses have a minimum residency period, so check the wildlife department's rule.", "A nonresident deer license costs several hundred dollars, so time the move around deer season."],
+            ["Within 30 days of moving", `${loc.dmv}. Title and register the truck and RV, register to vote, and file IRS Form 8822 to change your address. Update Social Security and the 401(k) plan too.`, "These records are how you prove your residency changed, and when."],
+            ["State income tax returns", NO_INCOME_TAX.has(stateOf(p)) ? `File your federal 1040 as usual. ${st.name} has no income tax return to file, and Texas has none either.` : `File your federal 1040 as usual. File ${loc.forms}. The part-year return taxes only income received after you moved, and Texas has no return to file. For later withdrawals, have the plan withhold ${st.name} tax or pay quarterly estimates.`, "Moving mid-year means one part-year state return, not two. Later withdrawals are taxed by the state you live in when you take them."],
+            ["Property tax", `${loc.propertyTax}.`, "Paid to the county no matter which state's income tax applies. A homestead exemption usually needs a permanent dwelling, not an RV."],
+            ["Health and hunting", `Moving to a new state lets you change ACA plans right away (60-day window), but only if you had coverage before you moved. ${loc.medicaid}. ${loc.deerRules.split(". ").find((s) => s.includes("residen")) ?? `Check ${loc.wildlife}'s minimum residency for resident hunting licenses`}.`, "A nonresident deer license costs several hundred dollars, so time the move around deer season."],
           ]}
         />
         <Callout tone="info" title="Will Texas add an income tax? (as of November 5, 2026)">
@@ -1331,14 +1666,60 @@ export default function OklahomaRetreatPlan() {
       </Stack>
 
       <Stack gap={12}>
-        <H2>Recurring costs (normal economy, today's dollars)</H2>
+        <H2>Monthly living costs (normal economy, today's dollars)</H2>
+        <Text tone="secondary">
+          Every cost is editable as $/mo or $/yr, and the plan recomputes as you type. Start from a preset, then adjust
+          any line. The presets leave property tax, propane, firewood and electricity alone, because those come from
+          the state, the heat choice and the power setup. The {p.contingency}% contingency in Assumptions is added on
+          top. Set it to 0 if your numbers already include a cushion.
+        </Text>
+        <Row gap={8} wrap>
+          <Text size="small" tone="tertiary">Living-cost preset</Text>
+          {(Object.keys(LIVING_PRESETS) as LivingPreset[]).map((id) => (
+            <Pill key={id} onClick={() => applyLiving(id)}>
+              {LIVING_PRESETS[id].label}
+            </Pill>
+          ))}
+          <Text size="small" tone="tertiary" style={{ marginLeft: 12 }}>Heat with</Text>
+          {HEAT_IDS.map((id) => (
+            <Pill key={id} size="sm" active={heat === id} onClick={() => pickHeat(id)}>
+              {HEAT[id].label}
+            </Pill>
+          ))}
+        </Row>
+        <Grid columns={3} gap={12}>
+          {(Object.keys(LIVING_PRESETS) as LivingPreset[]).map((id) => {
+            const r = { ...rec, ...LIVING_PRESETS[id].values };
+            return (
+              <Stat
+                key={id}
+                value={`${money(annualCost(r, 60, p, false) / 12)}/mo`}
+                label={`${LIVING_PRESETS[id].label}: ${LIVING_PRESETS[id].note}`}
+              />
+            );
+          })}
+        </Grid>
+        <Callout tone={heat === "propane" ? "neutral" : "info"} title={`Heat: ${HEAT[heat].label}, in ${st.name}`}>
+          {HEAT[heat].summary}{" "}
+          {heat === "propane"
+            ? `In ${st.name} that's about ${STATES[stateOf(p)].propaneGal.toLocaleString("en-US")} gal/yr (${money(rec.propane ?? 0)}). Heating with wood instead would cut propane to about ${heatPlan(stateOf(p), "wood").propaneGal} gal and need about ${LOCAL[stateOf(p)].cords} cords a year.`
+            : `In ${st.name} plan on about ${hp.cords} cords a year and ${hp.propaneGal} gal of propane. ${loc.woodNote}. ${loc.ownWood ? `Cutting your own costs about $${FIREWOOD_OWN_PER_CORD} a cord in saw gas, chains and bar oil, but it takes about a day of work per cord, so cut and stack a year ahead. Green wood won't burn well.` : `Bought firewood runs about $${FIREWOOD_BUY_PER_CORD} a cord here.`}`}{" "}
+          {heat !== "propane" &&
+            "Many RV insurers won't cover a wood stove, so tell your insurer, or put the stove in the cabin, barn room or shelter instead. Use an RV- or marine-rated stove with the listed clearances and an insulated chimney, and keep a CO alarm by the bed."}
+        </Callout>
         <Grid columns="minmax(0, 1.2fr) minmax(0, 1fr)" gap={20} align="start">
-          <Table
-            headers={adults > 1 ? ["Cost", "$/yr", "Applies", `Household (${adults})`] : ["Cost", "$/yr", "Applies"]}
-            columnAlign={["left", "right", "left", "right"]}
-            rows={costRows}
-            striped
-          />
+          <Stack gap={8}>
+            <Table
+              headers={adults > 1 ? ["Cost", "$/mo", "$/yr", "Applies", `Household (${adults}), $/yr`] : ["Cost", "$/mo", "$/yr", "Applies"]}
+              columnAlign={["left", "right", "right", "left", "right"]}
+              rows={costRows}
+              striped
+            />
+            <Text size="small" tone="tertiary">
+              Monthly figures are rounded to the dollar. Health insurance before 65 depends on income: with
+              "As needed" withdrawals and modest income, a subsidized ACA bronze plan can cost under $50/mo.
+            </Text>
+          </Stack>
           <Stack gap={10}>
             <H3>Largest yearly costs before 65</H3>
             <BarChart
@@ -1356,10 +1737,11 @@ export default function OklahomaRetreatPlan() {
             <Callout tone="warning" title="Health insurance is the swing cost">
               ACA subsidies are based on income. In any year you withdraw more than about {money(acaCliff(p))} (400%
               of the poverty line for {peopleLabel(adultsOf(p))}), you lose the subsidy and pay full price, modeled here
-              as {money(p.acaUnsub)}/yr per person at 58. In
-              low-income years you may qualify for SoonerCare, Oklahoma's Medicaid, which has no asset test. Starting in
-              2027 it adds work or volunteer requirements for adults under 65. Check the current rules before you
-              rely on either.
+              as {money(p.acaUnsub)}/yr per person at 58. {loc.medicaid}.
+              {st.medicaid
+                ? " Starting in 2027, federal law adds work or volunteer requirements for expansion adults under 65."
+                : ""}{" "}
+              Check the current rules before you rely on either.
             </Callout>
           </Stack>
         </Grid>
@@ -1406,17 +1788,24 @@ export default function OklahomaRetreatPlan() {
               rowTone={[undefined, undefined, undefined, "info", undefined, undefined, "success", "warning", "danger"]}
             />
             <Text size="small" tone="tertiary">
-              In an Oklahoma December, 1 kW of panels makes about 3 kWh a day, and about 6 kWh in summer. A 6 kW array
-              covers the essentials year-round. A/C roughly doubles the system, so off-grid A/C uses a mini-split in the
-              cabin or barn room, not the RV roof unit.
+              In a {st.name} December, 1 kW of panels makes about {loc.solar[0]} kWh a day, and about {loc.solar[1]} kWh
+              in summer.{" "}
+              {loc.solar[0] >= 2.5
+                ? "A 6 kW array covers the essentials year-round."
+                : `A 6 kW array only makes about ${Math.round(6 * loc.solar[0])} kWh on a December day, so plan on the generator through the dark months or a larger array.`}{" "}
+              A/C roughly doubles the system, so off-grid A/C uses a mini-split in the cabin or barn room, not the RV
+              roof unit.
             </Text>
           </Stack>
           <Stack gap={10}>
             <Callout tone="info" title="Starlink">
               Residential service runs about $120/mo, and the kit costs $350–500. Prices and plans change, so check
-              starlink.com for the land's address before you buy. The dish needs a clear view of the northern sky. In
-              SE Oklahoma timber that usually means a 10–20 ft pole or the barn roof, not the RV roof. It draws about
-              1.5 kWh/day, more when the snow-melt heater runs. Put it on the battery-backed circuit so internet and
+              starlink.com for the land's address before you buy. The dish needs a clear view of the northern sky.{" "}
+              {loc.ownWood
+                ? `On timbered ${st.name} land that usually means a 10–20 ft pole or the barn roof, not the RV roof.`
+                : "Open country makes that easy, but anchor the mount for high wind."}{" "}
+              It draws about 1.5 kWh/day
+              {st.winterShelter > 0 ? ", and noticeably more in winter when the snow-melt heater runs" : ""}. Put it on the battery-backed circuit so internet and
               Wi-Fi calling stay up during an outage. It also gives you cell service through Wi-Fi calling where towers
               are weak.
             </Callout>
@@ -1427,8 +1816,8 @@ export default function OklahomaRetreatPlan() {
               battery or a small generator, add a soft-start kit (about $300). It cuts the start surge by about 70%.
             </Callout>
             <Callout tone="warning" title="Getting grid power to the land">
-              Before you make an offer, call the electric co-op that serves the parcel (in SE Oklahoma, for example,
-              Kiamichi Electric or Choctaw Electric) and get a written line-extension quote. A pole near the road can
+              Before you make an offer, call the electric utility that serves the parcel (for example, {loc.coops}) and
+              get a written line-extension quote. A pole near the road can
               cost $2–10K to connect. A quarter mile of new line can cost more than the land. If the quote is over
               about $20K, off-grid solar is usually cheaper and has no monthly bill.
             </Callout>
@@ -1493,37 +1882,29 @@ export default function OklahomaRetreatPlan() {
           headers={["Need", "Amount", "How the land covers it", "Weak point"]}
           rowTone={["warning", "success", "info", "danger", "warning", "danger"]}
           rows={[
-            ["Calories", `~${(hunt.need / 1e6).toFixed(1)}M kcal (2,200/day per person)`, `1-yr stored food covers year 1. After that: about ¼ acre of garden and 4–6 hens per person${p.hunting ? `, and ${p.deerPerYear} deer + ${p.hogsPerYear} hogs (~${Math.round(hunt.share * 100)}% of calories)` : ""}`, "Year 2+. A first-year garden in Oklahoma clay seldom covers half your calories. Start it in a normal year."],
+            ["Calories", `~${(hunt.need / 1e6).toFixed(1)}M kcal (2,200/day per person)`, `1-yr stored food covers year 1. After that: about ¼ acre of garden and 4–6 hens per person${p.hunting ? `, and ${p.deerPerYear} deer + ${p.hogsPerYear} hogs (~${Math.round(hunt.share * 100)}% of calories)` : ""}`, `Year 2+. A first-year garden with a growing season of ${st.growing} seldom covers half your calories. Start it in a normal year.`],
             ["Drinking + hygiene water", `~${(1825 * adults).toLocaleString("en-US")} gal (5 gal/person/day)`, "Hand pump on the well covers this easily", "Electric pump without hand-pump backup"],
-            ["Garden water", "~100–140K gal per summer for ¼ acre", "Pond, creek, rain catchment (1,000 sq ft roof yields ~25K gal/yr in eastern OK)", "Drought years like 2011 and 2022 dry up ponds"],
-            ["Heat", "~500 gal propane, or 2–4 cords of wood in a small insulated cabin", "Stored propane lasts 1–2 winters. Post-oak timberland yields roughly ½–1 cord per acre per year", "RVs heat poorly. Ice storms are the real killer"],
+            ["Garden water", "~100–140K gal per summer for ¼ acre", `Pond, creek, rain catchment (a 1,000 sq ft roof yields ~${(Math.round((parseFloat(st.rain) * 1000 * 0.62 * 0.8) / 1000) || 0).toLocaleString("en-US")}K gal/yr with ${st.rain} of rain)`, "Drought years dry up ponds and shallow wells"],
+            ["Heat", `~${STATES[stateOf(p)].propaneGal.toLocaleString("en-US")} gal propane, or ~${loc.cords} cords of wood`, `Stored propane lasts 1–2 winters. ${loc.woodNote}`, st.winterShelter > 0 ? `Winters reach ${st.winterLow}. Losing heat is deadly within hours` : "RVs heat poorly. Ice storms are the real killer"],
             ["Medicine", "Every prescription you take, plus dental", "Stockpile what your doctor will allow, get dental work done early, learn first aid", "The largest risk at 58+. You can't grow it"],
-            ["Cooling", "July–August highs over 100°F", "Shade, fans on solar, a cabin with an earth-sheltered side", "RV A/C can't run on a modest solar bank"],
+            ["Cooling", loc.summerHigh, "Shade, fans on solar, a cabin with an earth-sheltered side", "RV A/C can't run on a modest solar bank"],
           ]}
         />
       </Stack>
 
       <Stack gap={12}>
-        <H2>Hunting: whitetail deer and feral hogs</H2>
-        {stateOf(p) !== "OK" && (
-          <Callout tone="info" title={`Game in ${st.name}`}>
-            {st.game}.{" "}
+        <H2>Hunting in {st.name}: {st.game.toLowerCase()}</H2>
+        <Text tone="secondary">{loc.huntIntro}</Text>
+        {(st.hogs === 0 || st.elk > 0) && (
+          <Callout tone="info" title={`What that means for the meat plan`}>
             {st.hogs === 0
-              ? "There are few or no feral hogs here, so the plan sets hogs to 0 and loses the lard. Venison and elk are very lean; plan on stored oil or raising pigs for fat."
+              ? "With few or no feral hogs here, the plan sets hogs to 0 and loses the lard. Venison and elk are very lean, so plan on stored oil or raising a few pigs for fat."
               : ""}
             {st.elk > 0
-              ? ` One elk yields about ${ELK_LB} lb of boneless meat, about four deer's worth. Residents can usually buy a general elk tag over the counter.`
-              : ""}{" "}
-            The deer and hog processing steps below apply to elk too.
+              ? ` One elk yields about ${ELK_LB} lb of boneless meat, about four deer's worth. The deer processing steps below apply to elk too.`
+              : ""}
           </Callout>
         )}
-        <Text tone="secondary">
-          Eastern and southeastern Oklahoma have strong deer numbers and some of the densest feral hog populations in
-          the country. Hogs are the better long-term food source. They have no season and no bag limit, they breed two
-          litters a year, and they carry fat, which lean venison lacks. Deer are the better-tasting meat, but they are
-          limited by season and tags in a normal economy. In a collapse, local deer would be hunted out within a few
-          seasons. By 1917, unregulated hunting had left only a few hundred deer in all of Oklahoma.
-        </Text>
         <Grid columns={5} gap={12}>
           <Stat value={`${hunt.meatLb} lb`} label="Boneless meat per year" />
           <Stat value={`${hunt.lardLb} lb`} label="Rendered lard per year" />
@@ -1532,7 +1913,7 @@ export default function OklahomaRetreatPlan() {
           <Stat value={money(huntTotal)} label="Gear cost, one-time" />
         </Grid>
         <Text size="small" tone="tertiary">
-          Yields assume about {DEER_LB} lb boneless meat per Oklahoma whitetail and, for a 150 lb hog, about {HOG_LB} lb
+          Yields assume about {DEER_LB} lb boneless meat per deer and, for a 150 lb hog, about {HOG_LB} lb
           of meat plus {HOG_LARD_LB} lb of lard. Venison is ~{KCAL_VENISON_LB} kcal/lb, hog meat ~{KCAL_HOG_LB}, lard
           ~{KCAL_LARD_LB}. Savings are counted at your store-meat price, capped at half the grocery budget, and are
           already subtracted in the runway chart. Meat covers your protein needs, not your calories. Meat this lean
@@ -1546,27 +1927,20 @@ export default function OklahomaRetreatPlan() {
             {upfrontTable("hunting")}
           </Stack>
           <Stack gap={8}>
-            <H3>Oklahoma rules to check before you hunt</H3>
+            <H3>{st.name} rules to check before you hunt</H3>
             <Text size="small">
-              <Text size="small" weight="semibold">Deer.</Text> Archery runs roughly Oct 1 to Jan 15, muzzleloader in late
-              October, and rifle for about two weeks around Thanksgiving. The yearly limit has been about 6 deer with no
-              more than 2 bucks. Every deer must be checked in through ODWC's E-check within 24 hours. Resident
-              landowners get some license exemptions on their own land, but tagging and E-check still apply.
+              <Text size="small" weight="semibold">{st.elk > 0 ? "Deer and elk." : "Deer."}</Text> {loc.deerRules}.
             </Text>
             <Text size="small">
-              <Text size="small" weight="semibold">Feral hogs.</Text> No closed season and no bag limit on private land.
-              Shooting hogs at night with lights or thermal requires a free feral swine control permit from ODWC. During
-              deer gun season, hog hunters follow deer-season orange and legal-method rules. Moving live feral hogs off
-              your property is heavily restricted, so get the rules from the Oklahoma Department of Agriculture (ODAFF)
-              before you think about penning them.
+              <Text size="small" weight="semibold">Feral hogs.</Text> {loc.hogRules}.
             </Text>
             <Text size="small">
-              <Text size="small" weight="semibold">After 64.</Text> Oklahoma residents can buy an inexpensive senior
-              lifetime hunting and fishing license. It's worth buying in a normal economy.
+              <Text size="small" weight="semibold">Senior licenses.</Text> {loc.seniorRules}. It's worth buying in a
+              normal economy.
             </Text>
             <Text size="small" tone="tertiary">
-              Regulations change yearly. Confirm dates and limits in the current ODWC regulations guide at
-              wildlifedepartment.com.
+              Regulations change yearly. Confirm dates, limits and residency rules in the current {loc.wildlife}{" "}
+              regulations at {loc.site}.
             </Text>
           </Stack>
         </Grid>
@@ -1574,18 +1948,20 @@ export default function OklahomaRetreatPlan() {
         <H3>From the kill to the table</H3>
         <Grid columns={2} gap={16} align="start">
           <Card>
-            <CardHeader trailing={<Pill size="sm">Lean, mild</Pill>}>Whitetail deer</CardHeader>
+            <CardHeader trailing={<Pill size="sm">Lean, mild</Pill>}>{st.elk > 0 ? "Deer and elk" : "Whitetail deer"}</CardHeader>
             <CardBody>
               <Stack gap={8}>
                 {[
-                  ["Tag first.", "Tag the deer where it lies, then E-check it within 24 hours."],
+                  ["Tag first.", stateOf(p) === "OK" ? "Tag the deer where it lies, then E-check it within 24 hours." : `Tag the deer where it lies, then report or check it as ${loc.wildlife} requires.`],
                   ["Field dress within an hour.", "Wear gloves. Make a shallow cut from the pelvis to the breastbone, keeping the blade edge up so you don't puncture the stomach or bladder. Cut the diaphragm, reach up and sever the windpipe, then roll the organs out. Core around the anus and pull it through. Keep the heart and liver if the liver has no spots."],
-                  ["Cool it fast. This matters most in Oklahoma.", "November afternoons often reach the 60s and 70s °F. The meat needs to get below 40°F within a few hours. If the air is warmer than about 40°F, skin and quarter the same day and put the quarters in coolers on ice. Keep the meat in bags or drain the meltwater daily, and it holds 3–5 days."],
+                  st.winterShelter > 0
+                    ? ["Cool it fast, but don't let it freeze unskinned.", "Early archery seasons in September are warm, so treat those like summer kills: skin, quarter and ice them the same day. In November cold, hang the quarters in a shed above freezing. A carcass that freezes solid before it's skinned is very hard to process."]
+                    : ["Cool it fast. Warm falls make this critical here.", "November afternoons often reach the 60s and 70s °F. The meat needs to get below 40°F within a few hours. If the air is warmer than about 40°F, skin and quarter the same day and put the quarters in coolers on ice. Keep the meat in bags or drain the meltwater daily, and it holds 3–5 days."],
                   ["Skin and quarter.", "Hang it by the hind legs on a gambrel. Skin while it's warm, which is much easier. The front shoulders come off with no joint, just cut behind the blade. Then take the hindquarters, both backstraps along the spine, the two tenderloins inside the cavity, the neck, and the rib and flank meat for grinding."],
                   ["Age it if you can.", "3–7 days at 34–40°F makes it noticeably more tender. This is optional."],
                   ["Trim hard.", "Remove all deer fat, silverskin and bloodshot meat. Deer fat is what makes venison taste gamey."],
-                  ["Cut it up.", "Backstraps and hindquarter muscles become steaks and roasts, and everything else becomes grind. Mix 10–20% hog fat into ground venison. It makes burgers and sausage that hold together and taste far better."],
-                  ["Chronic wasting disease (CWD).", "CWD has been found in Oklahoma. Bone the meat out rather than sawing through the spine. Don't eat the brain, spinal cord, eyes, spleen or lymph nodes. Test any deer from a zone where CWD has been detected, and don't eat a deer that acted sick."],
+                  ["Cut it up.", "Backstraps and hindquarter muscles become steaks and roasts, and everything else becomes grind. Mix 10–20% hog or pork fat into ground venison. It makes burgers and sausage that hold together and taste far better."],
+                  ["Chronic wasting disease (CWD).", `CWD has been found in ${st.name}. Bone the meat out rather than sawing through the spine. Don't eat the brain, spinal cord, eyes, spleen or lymph nodes. Test any deer from a zone where CWD has been detected, and don't eat a deer that acted sick.`],
                 ].map(([h, b], i) => (
                   <Text key={h} size="small">
                     <Text size="small" weight="semibold">{`${i + 1}. ${h}`}</Text> {b}
@@ -1594,6 +1970,7 @@ export default function OklahomaRetreatPlan() {
               </Stack>
             </CardBody>
           </Card>
+          {st.hogs > 0 ? (
           <Card>
             <CardHeader trailing={<Pill size="sm">Handle with gloves</Pill>}>Feral hog</CardHeader>
             <CardBody>
@@ -1615,6 +1992,13 @@ export default function OklahomaRetreatPlan() {
               </Stack>
             </CardBody>
           </Card>
+          ) : (
+            <Callout tone="neutral" title={`No feral hogs in ${st.name}`}>
+              Fat is the hard part of a wild-game diet here. Raise two feeder pigs a year for lard and sausage fat, or
+              store cooking oil. A pig raised from spring to fall yields about 150 lb of meat and 20–30 lb of lard. The
+              hog trapping and processing steps are hidden because they don't apply.
+            </Callout>
+          )}
         </Grid>
 
         <H3>Keeping the meat, with and without power</H3>
@@ -1631,11 +2015,11 @@ export default function OklahomaRetreatPlan() {
           ]}
         />
         <Callout tone="info" title="Practical limits">
-          A corral trap can catch 6–12 hogs in one night, which is 300+ lb of meat. That's more than one canner and one
-          freezer can handle quickly. A 7-quart canner load holds about 10 lb of meat and takes about 2.5 hours,
-          including heat-up and cool-down. Releasing feral hogs is illegal in Oklahoma, so only spring the trap when you
-          have the time, ice and jars ready. Hogs you can't process still have to be killed and disposed of. Learn all of this in a normal year while a processor and a grocery store still exist
-          as a backup.
+          {st.hogs > 0
+            ? `A corral trap can catch 6–12 hogs in one night, which is 300+ lb of meat. That's more than one canner and one freezer can handle quickly. Releasing feral hogs is illegal in ${st.name}, so only spring the trap when you have the time, ice and jars ready. Hogs you can't process still have to be killed and disposed of. `
+            : `${st.elk > 0 ? "An elk is 180+ lb of boneless meat at once, " : "Two or three deer in a week is 100+ lb of meat, "}more than one canner and one freezer can handle quickly. `}
+          A 7-quart canner load holds about 10 lb of meat and takes about 2.5 hours, including heat-up and cool-down.
+          Learn all of this in a normal year while a processor and a grocery store still exist as a backup.
         </Callout>
       </Stack>
 
@@ -1738,33 +2122,37 @@ export default function OklahomaRetreatPlan() {
       </Stack>
 
       <Stack gap={12}>
-        <H2>Oklahoma-specific notes</H2>
+        <H2>{st.name}-specific notes</H2>
         <Grid columns={2} gap={16}>
           <Stack gap={8}>
             <Text>
-              <Text weight="semibold">Where to buy.</Text> Southeast and east Oklahoma (Pushmataha, Latimer, Le Flore,
-              McCurtain, Pittsburg counties) get 40–55 inches of rain a year, have timber for firewood, and still sell
-              raw land near $1,500/acre. Western Oklahoma land is cheaper but gets 20–30 inches of rain, with little
-              wood and a lot of wind.
+              <Text weight="semibold">Where to buy.</Text>{" "}
+              {stateOf(p) === "OK"
+                ? "Southeast and east Oklahoma (Pushmataha, Latimer, Le Flore, McCurtain, Pittsburg counties) get 40–55 inches of rain a year, have timber for firewood, and still sell raw land near $1,500/acre. Western Oklahoma land is cheaper but gets 20–30 inches of rain, with little wood and a lot of wind."
+                : `${st.region}. Expect about ${money(st.landPerAcre)}/acre, ${st.rain} of rain, a growing season of ${st.growing}, and winter lows of ${st.winterLow}. ${st.upside}.`}
             </Text>
             <Text>
-              <Text weight="semibold">Water rights.</Text> Domestic use of groundwater and of stream water crossing your
-              land needs no permit. Irrigating or damming a stream beyond domestic use requires a permit from the
-              Oklahoma Water Resources Board (OWRB). A spring or a creek that runs year-round is worth paying extra for.
-              A pond is only as good as its watershed in a drought.
+              <Text weight="semibold">Water rights.</Text>{" "}
+              {stateOf(p) === "OK"
+                ? "Domestic use of groundwater and of stream water crossing your land needs no permit. Irrigating or damming a stream beyond domestic use requires a permit from the Oklahoma Water Resources Board (OWRB)."
+                : `${st.water}.`}{" "}
+              A spring or a creek that runs year-round is worth paying extra for. A pond is only as good as its watershed
+              in a drought.
+            </Text>
+            <Text>
+              <Text weight="semibold">Well.</Text> {loc.well}.
             </Text>
           </Stack>
           <Stack gap={8}>
             <Text>
-              <Text weight="semibold">Living in an RV.</Text> Most rural counties have no zoning, but any dwelling with
-              plumbing needs a DEQ-permitted septic system. Buy a four-season unit and plan to have the pole barn or
-              cabin take over as the real shelter within 5–10 years.
+              <Text weight="semibold">Living in an RV.</Text> {loc.rvLiving}. {loc.septic}. Buy a four-season unit and
+              plan to have the pole barn or cabin take over as the real shelter within 5–10 years.
             </Text>
             <Text>
-              <Text weight="semibold">Property tax stays low.</Text> Oklahoma assesses 11–13.5% of market value at
-              roughly 80–100 mills. That puts raw land at $75K around $400–800/yr, and an agricultural-use valuation can
-              lower it further. At 65 you can apply to freeze the assessed value if household income falls under the
-              county limit.
+              <Text weight="semibold">Property tax.</Text> {loc.propertyTax}.
+            </Text>
+            <Text>
+              <Text weight="semibold">Hardest part.</Text> {st.downside}.
             </Text>
           </Stack>
         </Grid>
