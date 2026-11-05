@@ -26,7 +26,10 @@ import {
 } from "./ui";
 
 type Status = "mfj" | "single";
-type Strategy = "lump" | "asNeeded";
+type Strategy = "lump" | "split" | "asNeeded";
+type PowerMode = "grid" | "hybrid" | "offgrid" | "offgridAC";
+
+const isLump = (p: { strategy: Strategy }) => p.strategy !== "asNeeded";
 
 type Params = {
   adults: number;
@@ -50,6 +53,8 @@ type Params = {
   elkPerYear: number;
   meatValue: number;
   state: StateId;
+  txMove: boolean;
+  powerMode: PowerMode;
 };
 
 type StateId = "OK" | "MT" | "WY" | "ID" | "SD" | "ND" | "TN" | "AR" | "MO" | "WV" | "MS";
@@ -225,6 +230,7 @@ const STATES: Record<StateId, StateInfo> = {
 };
 
 const STATE_IDS = Object.keys(STATES) as StateId[];
+const NO_INCOME_TAX = new Set<StateId>(["WY", "SD", "TN"]);
 
 type HazardCat = "Weather" | "Fire + drought" | "Wildlife + insects" | "Geologic + tropical";
 const HAZARDS: Array<{ id: string; label: string; cat: HazardCat }> = [
@@ -313,7 +319,40 @@ const DEFAULT_PARAMS: Params = {
   elkPerYear: 0,
   meatValue: 5,
   state: "OK",
+  txMove: true,
+  powerMode: "grid",
 };
+
+const POWER: Record<
+  PowerMode,
+  { label: string; power: number; offgrid: number; electric: number; solarNote: string; summary: string }
+> = {
+  grid: {
+    label: "Grid only (co-op line)",
+    power: 10000, offgrid: 15000, electric: 1500,
+    solarNote: "Backup only, so it's counted as collapse hardening",
+    summary: "Cheapest to build if a co-op line runs along the road. Every outage takes the well, freezer and Starlink down with it.",
+  },
+  hybrid: {
+    label: "Grid + solar and battery (hybrid)",
+    power: 10000, offgrid: 18000, electric: 500,
+    solarNote: "About 8 kW of panels, 20–30 kWh of battery and a hybrid inverter. The grid covers A/C peaks and cloudy weeks",
+    summary: "The best fit for this plan. The grid runs the A/C and charges the battery. When the grid drops, the battery keeps the well, freezer and Starlink going.",
+  },
+  offgrid: {
+    label: "Off-grid solar, no A/C",
+    power: 0, offgrid: 22000, electric: 400,
+    solarNote: "About 6 kW of panels, 30 kWh of LiFePO4 and a 48 V inverter. Runs the well, fridge, freezer, Starlink and fans",
+    summary: "No line extension and no bill, but summers in the RV are fans and shade only. A generator covers cloudy stretches in winter.",
+  },
+  offgridAC: {
+    label: "Off-grid solar with A/C",
+    power: 0, offgrid: 40000, electric: 600,
+    solarNote: "About 12 kW of panels and 45–60 kWh of battery, running a 12K BTU mini-split instead of the RV roof A/C",
+    summary: "Full comfort with no utility, but it costs about twice as much as the no-A/C system, and the battery needs replacing in 12–15 years.",
+  },
+};
+const POWER_IDS = Object.keys(POWER) as PowerMode[];
 
 const DEER_LB = 45;
 const HOG_LB = 50;
@@ -334,10 +373,19 @@ const upAmount = (up: Record<string, number>, id: string, p: Params) =>
   (up[id] ?? 0) * (PER_PERSON_UPFRONT.has(id) ? adultsOf(p) : 1);
 const acaCliff = (p: Params) => 4 * (15650 + 5500 * (adultsOf(p) - 1));
 
+type Group = "core" | "hardening" | "hunting";
+
+function groupOf(u: UpfrontItem, p: Params): Group {
+  if (u.hunting) return "hunting";
+  if (u.id === "offgrid" && p.powerMode !== "grid") return "core";
+  return u.hardening ? "hardening" : "core";
+}
+
 function upfrontTotalFor(p: Params, up: Record<string, number>): number {
   return UPFRONT.reduce((s, u) => {
-    if (u.hunting && !p.hunting) return s;
-    if (!u.hunting && u.hardening && !p.hardening) return s;
+    const g = groupOf(u, p);
+    if (g === "hunting" && !p.hunting) return s;
+    if (g === "hardening" && !p.hardening) return s;
     return s + upAmount(up, u.id, p);
   }, 0);
 }
@@ -364,7 +412,10 @@ const UPFRONT: UpfrontItem[] = [
   { id: "closing", label: "Closing, survey, title", note: "Rural tracts often need a new survey", hardening: false },
   { id: "well", label: "Drilled well + pump", note: "~150–300 ft; Oklahoma drillers run ~$30–50/ft installed", hardening: false },
   { id: "septic", label: "Septic + DEQ permit", note: "Aerobic systems are common on Oklahoma clay soils", hardening: false },
-  { id: "power", label: "Grid drop or basic solar", note: "Cheap if a power line runs along the road; expensive if it doesn't", hardening: false },
+  { id: "power", label: "Grid line drop / extension + meter", note: "$2–10K if a co-op line runs along the road; co-ops charge roughly $15–40K per mile beyond that. $0 off-grid", hardening: false },
+  { id: "rvhookup", label: "RV pedestal: 50 A outlet, frost-free hydrant, sewer cleanout", note: "Hooks the RV to power, the well and the septic so you aren't hauling water or dumping tanks", hardening: false },
+  { id: "starlink", label: "Starlink kit + pole or roof mount", note: "Mount it clear of trees with an open view of the northern sky", hardening: false },
+  { id: "generator", label: "Dual-fuel inverter generator, 4–5 kW", note: "Runs on propane from the main tank. Covers grid outages and cloudy weeks", hardening: false },
   { id: "pad", label: "Driveway + gravel RV pad", note: "Red clay turns to mud; gravel is not optional", hardening: false },
   { id: "barn", label: "Pole barn / RV cover", note: "Protects the RV from hail and ice; doubles as a workshop", hardening: false },
   { id: "shelter", label: "In-ground storm shelter", note: "An RV is the worst place to be in a tornado", hardening: false },
@@ -390,7 +441,8 @@ const UPFRONT: UpfrontItem[] = [
 ];
 
 const PRESET_PLANNED: Record<string, number> = {
-  land: 75000, winter: 0, rv: 40000, closing: 3000, well: 15000, septic: 9000, power: 10000, pad: 5000,
+  land: 75000, winter: 0, rv: 40000, closing: 3000, well: 15000, septic: 9000, power: 10000,
+  rvhookup: 2500, starlink: 500, generator: 1200, pad: 5000,
   barn: 10000, shelter: 5000, safety: 1200, propane: 3500, tractor: 10000, fence: 5000,
   handpump: 3000, offgrid: 15000, cabin: 15000, food: 3000, garden: 4000, rain: 3000,
   medical: 1000, comms: 2500, fuel: 3000,
@@ -398,7 +450,8 @@ const PRESET_PLANNED: Record<string, number> = {
 };
 
 const PRESET_LEAN: Record<string, number> = {
-  land: 75000, winter: 0, rv: 30000, closing: 2500, well: 12000, septic: 7000, power: 6000, pad: 3000,
+  land: 75000, winter: 0, rv: 30000, closing: 2500, well: 12000, septic: 7000, power: 6000,
+  rvhookup: 1500, starlink: 400, generator: 800, pad: 3000,
   barn: 0, shelter: 4000, safety: 800, propane: 3000, tractor: 5000, fence: 0,
   handpump: 2500, offgrid: 8000, cabin: 6000, food: 2000, garden: 2000, rain: 1500,
   medical: 750, comms: 1000, fuel: 2000,
@@ -414,7 +467,7 @@ const RECURRING: RecurringItem[] = [
   { id: "water", label: "Water: well testing, filters", rule: "all", collapse: "Hand pump, rain catchment, pond + filter" },
   { id: "proptax", label: "Property tax", rule: "all", collapse: "Not collected" },
   { id: "propane", label: "Propane (~500 gal/yr; RV furnace in winter)", rule: "all", collapse: "Stored propane, then firewood" },
-  { id: "electric", label: "Electricity (grid; summer A/C is the big draw)", rule: "all", collapse: "Solar for essentials only, no A/C" },
+  { id: "electric", label: "Electricity (grid bill, or generator fuel off-grid)", rule: "all", collapse: "Solar for essentials only, no A/C" },
   { id: "gas", label: "Gasoline (~5,000 mi/yr + mower)", rule: "all", collapse: "Gone in 6–12 months; walk or stay put" },
   { id: "autoins", label: "Vehicle insurance + tags", rule: "all", collapse: "Not needed" },
   { id: "rvins", label: "RV insurance (full-timer policy)", rule: "all", collapse: "Not needed" },
@@ -423,7 +476,7 @@ const RECURRING: RecurringItem[] = [
   { id: "medicare", label: "Medicare B + Medigap G + Part D, per person, 65+", rule: "post65", collapse: "None" },
   { id: "oop", label: "Dental, vision, Rx out-of-pocket, per person", rule: "all", collapse: "Stockpile only" },
   { id: "sos", label: "Satellite SOS subscription (Garmin inReach or similar)", rule: "all", collapse: "Works as long as the satellites do" },
-  { id: "internet", label: "Starlink + cell phone", rule: "all", collapse: "Radio" },
+  { id: "internet", label: "Starlink Residential (~$120/mo) + cell phone", rule: "all", collapse: "Radio" },
   { id: "maint", label: "RV, tractor, equipment repairs", rule: "all", collapse: "Your labor + spare parts on hand" },
   { id: "septic", label: "Septic service", rule: "all", collapse: "Outhouse / composting" },
   { id: "household", label: "Household, clothing, personal, per person", rule: "all", collapse: "Make do, barter" },
@@ -434,7 +487,7 @@ const RECURRING: RecurringItem[] = [
 
 const RECURRING_DEFAULTS: Record<string, number> = {
   food: 3600, hunt: 400, water: 300, proptax: 500, propane: 1500, electric: 1500, gas: 1000, autoins: 1400,
-  rvins: 1000, liability: 500, aca: 3000, medicare: 4750, oop: 750, sos: 200, internet: 1500, maint: 2500,
+  rvins: 1000, liability: 500, aca: 3000, medicare: 4750, oop: 750, sos: 200, internet: 1900, maint: 2500,
   septic: 200, household: 1200, garden: 800, trash: 200, rvreserve: 2500,
 };
 
@@ -469,16 +522,22 @@ function stateTax(w: number, p: Params): number {
   return STATES[stateOf(p)].tax(w, p.status === "mfj", Math.max(0, w - FED[p.status].std));
 }
 
-function taxOnWithdrawal(w: number, p: Params, age: number) {
+function taxOnWithdrawal(w: number, p: Params, age: number, inTexas = false) {
   const fed = fedTax(w, p.status, age);
-  const ok = stateTax(w, p);
+  const ok = inTexas ? 0 : stateTax(w, p);
   const penalty = !p.rule55 && age < 59.5 ? 0.1 * w : 0;
   return { fed, ok, penalty, total: fed + ok + penalty };
 }
 
-function grossUp(need: number, p: Params, age: number): number {
+function lumpSumTax(p: Params) {
+  const parts = p.strategy === "split" ? 2 : 1;
+  const one = taxOnWithdrawal(p.k401 / parts, p, START_AGE, p.txMove);
+  return { fed: one.fed * parts, ok: one.ok * parts, penalty: one.penalty * parts, total: one.total * parts };
+}
+
+function grossUp(need: number, p: Params, age: number, inTexas = false): number {
   let w = need;
-  for (let i = 0; i < 40; i++) w = need + taxOnWithdrawal(w, p, age).total;
+  for (let i = 0; i < 40; i++) w = need + taxOnWithdrawal(w, p, age, inTexas).total;
   return w;
 }
 
@@ -531,9 +590,9 @@ function simulate(
   let stranded: number | null = null;
   const balances: number[] = [];
 
-  if (p.strategy === "lump") {
+  if (isLump(p)) {
     year0Gross = p.k401;
-    year0Tax = taxOnWithdrawal(p.k401, p, START_AGE).total;
+    year0Tax = lumpSumTax(p).total;
     balance = p.k401 - year0Tax;
   }
 
@@ -549,18 +608,19 @@ function simulate(
       (age >= p.ssAge ? p.ssMonthly * 12 * f : 0) + (age < p.otherUntil ? p.otherIncome : 0);
     const extra = t === 0 ? upfront : 0;
 
-    if (p.strategy === "lump") {
-      const unsub = t === 0 || balance * r > cliff;
+    if (isLump(p)) {
+      const unsub = t === 0 || (t === 1 && p.strategy === "split") || balance * r > cliff;
       const cost = annualCost(rec, age, p, unsub) * f;
       if (t === 0) year0Cost = cost;
       const after = balance - (cost - income + extra);
       balance = after > 0 ? after * (1 + r) : after;
     } else {
       let need = annualCost(rec, age, p, false) * f - income + extra;
-      let w = need > 0 ? grossUp(need, p, age) : 0;
+      const inTexas = t === 0 && p.txMove;
+      let w = need > 0 ? grossUp(need, p, age, inTexas) : 0;
       if (w > cliff) {
         need = annualCost(rec, age, p, true) * f - income + extra;
-        w = grossUp(need, p, age);
+        w = grossUp(need, p, age, inTexas);
       }
       if (t === 0) {
         year0Gross = w;
@@ -627,7 +687,18 @@ export default function OklahomaRetreatPlan() {
     setRec(nr);
   };
   const applyPreset = (preset: Record<string, number>) =>
-    setUp({ ...preset, land: up.land ?? preset.land, winter: up.winter ?? 0 });
+    setUp({
+      ...preset,
+      land: up.land ?? preset.land,
+      winter: up.winter ?? 0,
+      ...(p.powerMode === "grid" ? {} : { power: up.power ?? 0, offgrid: up.offgrid ?? 0 }),
+    });
+  const pickPower = (mode: PowerMode) => {
+    const m = POWER[mode];
+    set("powerMode", mode);
+    setUp((prev) => ({ ...prev, power: m.power, offgrid: m.offgrid }));
+    setRec((prev) => ({ ...prev, electric: m.electric }));
+  };
 
   const stateRows = STATE_IDS.map((id) => {
     const [sp, su, sr] = applyState(id, p, up, rec);
@@ -638,16 +709,15 @@ export default function OklahomaRetreatPlan() {
       s: STATES[id],
       land: su.land ?? 0,
       total,
-      lumpStateTax: Math.round(stateTax(sp.k401, sp)),
+      lumpStateTax: Math.round(lumpSumTax({ ...sp, txMove: false }).ok),
       propane: sr.propane ?? 0,
       cost: annualCost(sr, 60, sp, false),
       lasts: sim.depletedAge,
     };
   });
 
-  const groupOf = (u: UpfrontItem) => (u.hunting ? "hunting" : u.hardening ? "hardening" : "core");
-  const groupTotal = (g: string) =>
-    UPFRONT.filter((u) => groupOf(u) === g).reduce((s, u) => s + upAmount(up, u.id, p), 0);
+  const groupTotal = (g: Group) =>
+    UPFRONT.filter((u) => groupOf(u, p) === g).reduce((s, u) => s + upAmount(up, u.id, p), 0);
   const adults = adultsOf(p);
   const who = peopleLabel(adults);
   const coreTotal = groupTotal("core");
@@ -662,10 +732,14 @@ export default function OklahomaRetreatPlan() {
   const highInf = simulate(p, rec, upfrontTotal, 7, null);
   const collapse = simulate(p, rec, upfrontTotal, p.inflation, p.collapseAge);
 
-  const lumpTax = taxOnWithdrawal(p.k401, p, START_AGE);
-  const netAfterTax = normal.year0Gross > 0 && p.strategy === "lump" ? p.k401 - normal.year0Tax : p.k401;
-  const leftAfterSetup =
-    p.strategy === "lump" ? netAfterTax - upfrontTotal : p.k401 - normal.year0Gross + 0;
+  const lumpTax = lumpSumTax(p);
+  const lumpTaxAfterMove = lumpSumTax({ ...p, txMove: false });
+  const lumpTaxOneYear = lumpSumTax({ ...p, strategy: "lump", txMove: true });
+  const lumpTaxSplit = lumpSumTax({ ...p, strategy: "split", txMove: true });
+  const withheld = 0.2 * p.k401;
+  const netAfterTax = normal.year0Gross > 0 && isLump(p) ? p.k401 - normal.year0Tax : p.k401;
+  const leftAfterSetup = isLump(p) ? netAfterTax - upfrontTotal : p.k401 - normal.year0Gross;
+  const pm = POWER[p.powerMode] ?? POWER.grid;
 
   const steadyPre65 = annualCost(rec, 60, p, false);
   const steadyPost65 = annualCost(rec, 66, p, false);
@@ -677,7 +751,7 @@ export default function OklahomaRetreatPlan() {
   const lastsLabel = (r: SimResult) => (r.depletedAge === null ? `${END_AGE}+` : String(r.depletedAge));
   const shortfall = normal.depletedAge !== null && normal.depletedAge < 85;
 
-  const allocTaxes = p.strategy === "lump" ? normal.year0Tax : normal.year0Tax;
+  const allocTaxes = normal.year0Tax;
   const allocOther = coreTotal - landRv;
   const allocHard = p.hardening ? hardTotal : 0;
   const allocHunt = p.hunting ? huntTotal : 0;
@@ -700,11 +774,11 @@ export default function OklahomaRetreatPlan() {
     .sort((a, b) => b.value - a.value)
     .slice(0, 8);
 
-  const upfrontTable = (group: string) => (
+  const upfrontTable = (group: Group) => (
     <Table
       headers={["Item", "Cost", "Why"]}
       columnAlign={["left", "right", "left"]}
-      rows={UPFRONT.filter((u) => groupOf(u) === group).map((u) => [
+      rows={UPFRONT.filter((u) => groupOf(u, p) === group).map((u) => [
         u.label,
         <NumField
           key={u.id}
@@ -713,7 +787,7 @@ export default function OklahomaRetreatPlan() {
           width={88}
         />,
         <Text size="small" tone="tertiary">
-          {u.note}
+          {u.id === "offgrid" ? pm.solarNote : u.note}
         </Text>,
       ])}
     />
@@ -727,13 +801,17 @@ export default function OklahomaRetreatPlan() {
           Household of {who}, retiring at 58, living in an RV on 50 acres with a water source in {st.region}. Costs
           marked "per person" scale with the household size in Assumptions. Every number with a box is editable, and
           the charts recompute as you type. Taxes use 2026 federal brackets plus {st.name} state tax (
-          {st.taxNote}). These are planning estimates, not tax advice.
+          {st.taxNote})
+          {p.txMove ? ", except that the first year's withdrawal is taken while you're still a Texas resident" : ""}.
+          These are planning estimates, not tax advice.
         </Text>
       </Stack>
 
       <Callout tone={shortfall ? "danger" : "success"} title={`Normal economy: money lasts to age ${lastsLabel(normal)}`}>
         {p.strategy === "lump"
           ? `Taking the full ${money(p.k401)} in one year costs about ${money(normal.year0Tax)} in tax, which is more than the RV. `
+          : p.strategy === "split"
+          ? `Splitting the ${money(p.k401)} across two tax years (December and January) costs about ${money(normal.year0Tax)} in tax. `
           : `Withdrawing as needed, year one still costs about ${money(normal.year0Tax)} in tax because the setup spending lands in that year. `}
         {`After ${money(upfrontTotal)} of land and setup, the household spends about ${money(steadyPre65)}/yr before 65`}
         {ssAnnual > 0
@@ -745,9 +823,9 @@ export default function OklahomaRetreatPlan() {
       </Callout>
 
       <Grid columns={4} gap={16}>
-        <Stat value={kMoney(netAfterTax)} label={p.strategy === "lump" ? "Cash after lump-sum tax" : "Kept in 401(k)/IRA"} />
+        <Stat value={kMoney(netAfterTax)} label={isLump(p) ? "Cash after lump-sum tax" : "Kept in 401(k)/IRA"} />
         <Stat value={kMoney(upfrontTotal)} label="One-time setup (land, RV, build-out)" />
-        <Stat value={kMoney(leftAfterSetup)} label={p.strategy === "lump" ? "Left after setup, before living costs" : "Left in account after year 1"} tone={leftAfterSetup < 100000 ? "warning" : undefined} />
+        <Stat value={kMoney(leftAfterSetup)} label={isLump(p) ? "Left after setup, before living costs" : "Left in account after year 1"} tone={leftAfterSetup < 100000 ? "warning" : undefined} />
         <Stat value={`${money(steadyPre65)}/yr`} label="Living cost before 65, today's dollars" />
       </Grid>
 
@@ -795,9 +873,13 @@ export default function OklahomaRetreatPlan() {
                   onChange={(v) => set("strategy", v as Strategy)}
                   options={[
                     { value: "lump", label: "All at once" },
+                    { value: "split", label: "Split over 2 tax years" },
                     { value: "asNeeded", label: "As needed each year" },
                   ]}
                 />
+              </Field>
+              <Field label="First withdrawal while a Texas resident">
+                <Toggle checked={p.txMove} onChange={(v) => set("txMove", v)} />
               </Field>
               <Field label="Rule of 55 (no 10% penalty)">
                 <Toggle checked={p.rule55} onChange={(v) => set("rule55", v)} />
@@ -830,6 +912,13 @@ export default function OklahomaRetreatPlan() {
               </Field>
               <Field label="Collapse happens at age">
                 <NumField value={p.collapseAge} onChange={(n) => set("collapseAge", n)} width={64} />
+              </Field>
+              <Field label="Power setup">
+                <Select
+                  value={p.powerMode}
+                  onChange={(v) => pickPower(v as PowerMode)}
+                  options={POWER_IDS.map((id) => ({ value: id, label: POWER[id].label }))}
+                />
               </Field>
               <Field label="Include collapse-hardening build">
                 <Toggle checked={p.hardening} onChange={(v) => set("hardening", v)} />
@@ -881,7 +970,7 @@ export default function OklahomaRetreatPlan() {
             height={300}
           />
           <Text size="small" tone="tertiary">
-            X-axis: age. Y-axis: {p.strategy === "lump" ? "cash on hand after tax" : "pre-tax 401(k)/IRA balance"}, in
+            X-axis: age. Y-axis: {isLump(p) ? "cash on hand after tax" : "pre-tax 401(k)/IRA balance"}, in
             nominal dollars. Below $0 is the running shortfall: money you'd have to find somewhere else. Model:
             spending inflates yearly, Social Security gets matching COLAs, savings earn the return rate. Tax on
             interest is ignored.
@@ -919,7 +1008,11 @@ export default function OklahomaRetreatPlan() {
               {r.s.name}
             </Pill>,
             kMoney(r.land),
-            money(p.strategy === "lump" ? r.lumpStateTax : 0) + (p.strategy === "lump" ? "" : " (spread)"),
+            !isLump(p)
+              ? "Spread over years"
+              : p.txMove
+              ? r.lumpStateTax > 0 ? `$0 in TX (saves ${kMoney(r.lumpStateTax)})` : "$0"
+              : money(r.lumpStateTax),
             money(r.propane),
             money(r.cost),
             r.lasts === null ? `${END_AGE}+` : String(r.lasts),
@@ -1004,14 +1097,64 @@ export default function OklahomaRetreatPlan() {
             </Row>
           ))}
         </Row>
-        {p.strategy === "lump" && (
+        {isLump(p) && (
           <Text size="small" tone="tertiary">
-            Lump-sum tax detail: federal {money(lumpTax.fed)}, {st.name} {money(lumpTax.ok)}
+            Lump-sum tax detail: federal {money(lumpTax.fed)}, {p.txMove ? "Texas" : st.name} {money(lumpTax.ok)}
             {lumpTax.penalty > 0 ? `, early-withdrawal penalty ${money(lumpTax.penalty)}` : ""}. The Rule of 55 only
             waives the penalty if you leave the job in or after the year you turn 55 and withdraw from that employer's
             plan. Rolling to an IRA first brings the penalty back until 59½.
           </Text>
         )}
+      </Stack>
+
+      <Stack gap={12}>
+        <H2>Moving from Texas: taxes and residency</H2>
+        <Text tone="secondary">
+          Texas has no state income tax, and federal law (4 U.S.C. § 114) bars other states from taxing retirement
+          income paid to someone who isn't their resident. Any 401(k) money paid out while you still live in Texas is
+          never taxed by {st.name} or any other state. Federal tax is the same wherever you live. The "First withdrawal
+          while a Texas resident" switch in Assumptions applies this to the year-one withdrawal.
+        </Text>
+        <Grid columns={4} gap={16}>
+          <Stat
+            value={kMoney(lumpTaxAfterMove.ok)}
+            label={`${st.name} tax on the full ${kMoney(p.k401)} if taken after moving`}
+            tone={lumpTaxAfterMove.ok > 0 ? "warning" : undefined}
+          />
+          <Stat value="$0" label="State tax if taken while a Texas resident" tone="success" />
+          <Stat
+            value={kMoney(lumpTaxOneYear.fed - lumpTaxSplit.fed)}
+            label="Federal tax saved by splitting it across December and January"
+            tone="success"
+          />
+          <Stat
+            value={kMoney(Math.max(0, lumpTaxOneYear.fed - withheld))}
+            label={`Federal tax still owed after the plan's 20% (${kMoney(withheld)}) withholding, taken in one year`}
+          />
+        </Grid>
+        <Table
+          headers={["When", "What to do", "Why"]}
+          rows={[
+            ["Before you give notice", "Ask HR whether the plan allows Rule-of-55 and partial withdrawals, and get the distribution forms. Book one session with a CPA ($200–500).", "Some plans only allow one lump sum. Partial withdrawals keep the rest growing, penalty-free, in the same plan."],
+            ["Your last weeks in Texas", "Leave the job in or after the year you turn 55. Request the setup withdrawal with your Texas address on file and no state withholding. To split it, take half in December and half in January.", "Splitting puts each half in a lower federal bracket. Both halves are Texas income as long as you haven't moved yet."],
+            ["Until the money is paid out", "Keep your Texas driver's license, voter registration, vehicle registration and mailing address. Buying the land is fine. Moving in is not.", `${st.name} decides residency by where your permanent home is. Acting like a resident early could make the withdrawal its income.`],
+            ["Federal tax on the withdrawal", "The plan withholds 20% automatically. Pay the rest with IRS Direct Pay (Form 1040-ES) or with your return. Your 1099-R arrives in January.", "You avoid the underpayment penalty if withholding covers 100% of last year's tax, or 110% if last year's income was over $150K."],
+            ["Within 30 days of moving", stateOf(p) === "OK" ? "Get an Oklahoma driver's license at Service Oklahoma. Title and register the truck and RV, register to vote, and file IRS Form 8822 to change your address. Update Social Security and the 401(k) plan too." : `Get a ${st.name} driver's license. Title and register the truck and RV, register to vote, and file IRS Form 8822 to change your address. Update Social Security and the 401(k) plan too.`, "These records are how you prove your residency changed, and when."],
+            ["First April after the move", NO_INCOME_TAX.has(stateOf(p)) ? `File your federal 1040 as usual. ${st.name} has no income tax return to file. Texas has none either.` : stateOf(p) === "OK" ? "File your federal 1040 as usual. File Oklahoma Form 511-NR as a part-year resident, which taxes only income received after you moved. Texas has no return to file." : `File your federal 1040 as usual. File ${st.name}'s part-year resident return, which taxes only income received after you moved (${st.taxNote}). Texas has no return to file.`, "Moving mid-year means one part-year state return, not two."],
+            ["Every year after", NO_INCOME_TAX.has(stateOf(p)) ? "Federal return only." : stateOf(p) === "OK" ? "File Form 511 as a full-year resident, due April 15. For later 401(k) withdrawals, have the plan withhold Oklahoma tax (Form OK-W-4-R), or pay quarterly with Form OW-8-ES if you'll owe $1,000 or more. Oklahoma excludes $10K a person of retirement income and doesn't tax Social Security." : `File ${st.name}'s resident return. Have the plan withhold ${st.name} tax on later withdrawals, or pay quarterly estimates.`, "Later withdrawals are taxed by the state you live in when you take them."],
+            ["Property tax", stateOf(p) === "OK" ? "Apply for the homestead exemption with the county assessor by March 15. It needs a permanent dwelling, so an RV may not qualify until a cabin or manufactured home is assessed. The county treasurer bills you in the fall, with the full amount due December 31 (or half then and half by March 31)." : "Apply for the homestead exemption with the county assessor once you live there. It usually needs a permanent dwelling, not an RV.", "Paid to the county no matter which state's income tax applies."],
+            ["Health and hunting", "Moving to a new state lets you change ACA plans right away (60-day window), but only if you had coverage before you moved. Resident hunting licenses have a minimum residency period, so check the wildlife department's rule.", "A nonresident deer license costs several hundred dollars, so time the move around deer season."],
+          ]}
+        />
+        <Callout tone="info" title="Will Texas add an income tax? (as of November 5, 2026)">
+          The governor-elect is Gina Hinojosa, a Democrat. During the campaign she said "I will never support a state
+          income tax." Either way, a governor can't create one. Article 8, Section 24-a of the Texas Constitution bans it.
+          Repealing that ban takes two-thirds of the House (100 of 150) and of the Senate (21 of 31), then a statewide
+          vote, and then a separate tax law. Republicans kept the state Senate. The new Legislature meets January 12,
+          2027 for 140 days, and any amendment would usually go to voters in November 2027. The earliest realistic tax
+          year is 2028. Withdrawals taken in 2026 or 2027 are safe, and once you've moved, Texas could never tax your
+          retirement income anyway.
+        </Callout>
       </Stack>
 
       <Stack gap={12}>
@@ -1073,6 +1216,110 @@ export default function OklahomaRetreatPlan() {
               rely on either.
             </Callout>
           </Stack>
+        </Grid>
+      </Stack>
+
+      <Stack gap={12}>
+        <H2>Power and Starlink: {pm.label}</H2>
+        <Text tone="secondary">
+          {pm.summary} Change the setup with "Power setup" in Assumptions or with the buttons below. That rewrites the
+          grid line, solar/battery and electricity costs in the plan, and you can still edit each number afterward.
+        </Text>
+        <Table
+          headers={["Option", "Grid line", "Solar + battery", "Power cost/yr", "Runs A/C?", "When the grid fails"]}
+          columnAlign={["left", "right", "right", "right", "left", "left"]}
+          rowTone={POWER_IDS.map((id) => (id === p.powerMode ? "info" : undefined))}
+          rows={POWER_IDS.map((id) => [
+            <Pill key={id} size="sm" active={id === p.powerMode} onClick={() => pickPower(id)}>
+              {POWER[id].label}
+            </Pill>,
+            money(POWER[id].power),
+            money(POWER[id].offgrid) + (id === "grid" ? " (hardening)" : ""),
+            money(POWER[id].electric),
+            id === "offgrid" ? "No, fans and shade only" : id === "grid" ? "Yes, while the grid is up" : "Yes",
+            id === "grid" ? "Generator, plus solar if the hardening build is on" : id === "hybrid" ? "Battery runs essentials; generator on cloudy days" : "No change. You're already independent",
+          ])}
+        />
+        <Grid columns={2} gap={20} align="start">
+          <Stack gap={8}>
+            <H3>Daily electric load (sizing the system)</H3>
+            <Table
+              headers={["Load", "Draw", "kWh/day"]}
+              columnAlign={["left", "left", "right"]}
+              rows={[
+                ["Well pump (1 hp submersible)", "~1,000 W, about 1 hr/day", "1.0"],
+                ["Refrigerator (RV 12 V or residential)", "Cycles all day", "1.0–1.5"],
+                ["Chest freezer, 7 cu ft", "Cycles all day", "0.5–1.0"],
+                ["Starlink dish + router", "50–75 W average, around the clock", "1.2–1.8"],
+                ["Lights, fans, laptop, phones, radio", "", "1.0"],
+                ["RV water pump, furnace fan, converter", "", "0.8"],
+                ["Total without A/C", "", "≈ 6–7"],
+                ["12K BTU mini-split, summer", "~600–1,000 W running", "8–12"],
+                ["RV roof A/C, 13.5K BTU, summer", "~1,500 W running, big start surge", "15–25"],
+              ]}
+              rowTone={[undefined, undefined, undefined, "info", undefined, undefined, "success", "warning", "danger"]}
+            />
+            <Text size="small" tone="tertiary">
+              In an Oklahoma December, 1 kW of panels makes about 3 kWh a day, and about 6 kWh in summer. A 6 kW array
+              covers the essentials year-round. A/C roughly doubles the system, so off-grid A/C uses a mini-split in the
+              cabin or barn room, not the RV roof unit.
+            </Text>
+          </Stack>
+          <Stack gap={10}>
+            <Callout tone="info" title="Starlink">
+              Residential service runs about $120/mo, and the kit costs $350–500. Prices and plans change, so check
+              starlink.com for the land's address before you buy. The dish needs a clear view of the northern sky. In
+              SE Oklahoma timber that usually means a 10–20 ft pole or the barn roof, not the RV roof. It draws about
+              1.5 kWh/day, more when the snow-melt heater runs. Put it on the battery-backed circuit so internet and
+              Wi-Fi calling stay up during an outage. It also gives you cell service through Wi-Fi calling where towers
+              are weak.
+            </Callout>
+            <Callout tone="neutral" title="Powering the RV itself">
+              Plug the RV's shore cord into the 50 A pedestal. The pedestal is fed by the grid, the hybrid inverter or
+              the generator. A 30 A RV needs a 50-to-30 A adapter. Add a hardwired surge protector with low-voltage
+              shutoff (about $300), because rural co-op lines sag and spike in storms. To start a roof A/C on
+              battery or a small generator, add a soft-start kit (about $300). It cuts the start surge by about 70%.
+            </Callout>
+            <Callout tone="warning" title="Getting grid power to the land">
+              Before you make an offer, call the electric co-op that serves the parcel (in SE Oklahoma, for example,
+              Kiamichi Electric or Choctaw Electric) and get a written line-extension quote. A pole near the road can
+              cost $2–10K to connect. A quarter mile of new line can cost more than the land. If the quote is over
+              about $20K, off-grid solar is usually cheaper and has no monthly bill.
+            </Callout>
+          </Stack>
+        </Grid>
+      </Stack>
+
+      <Stack gap={12}>
+        <H2>Water for the RV: refilling, drinking and showers</H2>
+        <Text tone="secondary">
+          An RV fresh-water tank holds 40–100 gallons. With short showers, {who} uses about{" "}
+          {adults === 1 ? "10–20" : `${10 * adults}–${20 * adults}`} gallons a day, so a full tank lasts about 3–7 days
+          when you're not hooked up. The goal is to plumb the RV to the well so you never haul water.
+        </Text>
+        <Table
+          headers={["Method", "How", "Cost", "When to use it"]}
+          rowTone={["success", "info", "neutral", "warning"]}
+          rows={[
+            ["Hook up to the well (best)", "Run a frost-free yard hydrant at the pad, then a drinking-water hose (NSF-61, white or blue), a pressure regulator set to 40–55 psi, and an inline sediment and carbon filter into the RV's city-water inlet. Water flows on demand, like a house.", "$300–800 plus the hydrant (in the RV pedestal line)", "Every day once the well is in. Below about 20°F, use a heated hose or fill the tank and disconnect."],
+            ["Fill the fresh tank from the hydrant", "Fill through the tank's fill port and run the RV's 12 V pump.", "$0", "Hard freezes, or to keep running if the well pump loses power."],
+            ["Haul water", "Fill a 275-gal food-grade IBC tote or a 35–100 gal truck-bed tank at a rural water district station, then pump it into the RV with a 12 V transfer pump.", "$400–800 for tank and pump; water is cents a gallon", "Before the well is drilled, or if the well fails."],
+            ["Rain, pond or creek (collapse)", "Run it through a gravity filter (Berkey or Sawyer), then boil it or add bleach. Never put untreated pond water in the RV tank.", "Rain catchment and filters are in the hardening build", "Grid-down backup only."],
+          ]}
+        />
+        <Grid columns={2} gap={16}>
+          <Callout tone="info" title="Sanitize the system">
+            Do this when you buy the RV and every 6–12 months after. Add ¼ cup of plain unscented bleach per 15 gallons
+            of tank, mixed into a gallon of water. Fill the tank, then run every faucet and the shower until you smell
+            chlorine. Let it sit at least 4 hours (overnight is better), then drain and flush with fresh water until
+            the smell is gone. Bypass and drain the water heater first.
+          </Callout>
+          <Callout tone="neutral" title="Drinking water and waste">
+            Test the well for coliform bacteria and nitrates when it's drilled and every year after (about $25–75 at a
+            state-certified lab). Use a countertop or under-sink filter for drinking water, and keep at least 14 gallons
+            per person stored in case the pump fails. Gray and black tanks drain to the septic cleanout through a sewer
+            hose. Keep the black valve closed until the tank is two-thirds full so solids flush out.
+          </Callout>
         </Grid>
       </Stack>
 
