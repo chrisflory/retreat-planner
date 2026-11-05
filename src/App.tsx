@@ -38,6 +38,7 @@ type Params = {
   k401: number;
   savings: number;
   retireAge: number;
+  goalAge: number;
   status: Status;
   strategy: Strategy;
   rule55: boolean;
@@ -637,6 +638,7 @@ const DEFAULT_PARAMS: Params = {
   k401: 375000,
   savings: 0,
   retireAge: 58,
+  goalAge: 85,
   status: "single",
   strategy: "lump",
   rule55: true,
@@ -874,6 +876,7 @@ const FED: Record<Status, { std: number; brackets: Array<[number, number]> }> = 
 const startAge = (p: { retireAge?: number }) => Math.min(75, Math.max(40, Math.round(p.retireAge ?? 58)));
 const rule55Applies = (p: Params) => p.rule55 && startAge(p) >= 55;
 const END_AGE = 95;
+const goalOf = (p: Params) => Math.min(END_AGE, Math.max(startAge(p) + 1, Math.round(p.goalAge ?? 85)));
 
 function fedTax(income: number, status: Status, age: number): number {
   const extraStd = age >= 65 ? (status === "mfj" ? 3300 : 2050) : 0;
@@ -953,6 +956,8 @@ function loanTerms(p: Params, land: number) {
   return { financed, payment, years: n, interest: payment * n - financed };
 }
 
+type SimAdjust = { spendCut?: number; extraIncome?: number; incomeUntil?: number };
+
 function simulate(
   p: Params,
   rec: Record<string, number>,
@@ -960,6 +965,7 @@ function simulate(
   inflationPct: number,
   collapseAge: number | null,
   land: number,
+  adjust?: SimAdjust,
 ): SimResult {
   const loan = loanTerms(p, land);
   const r = p.ret / 100;
@@ -991,20 +997,23 @@ function simulate(
     }
     const f = Math.pow(1 + inf, t);
     const ssFactor = p.ssCut && p.startYear + t >= EST.ssCutYear ? EST.ssCutPct / 100 : 1;
+    const bonus = adjust?.extraIncome && age <= (adjust.incomeUntil ?? -1) ? adjust.extraIncome : 0;
     const income =
-      (age >= p.ssAge ? p.ssMonthly * 12 * f * ssFactor : 0) + (age < p.otherUntil ? p.otherIncome : 0);
+      (age >= p.ssAge ? p.ssMonthly * 12 * f * ssFactor : 0) + (age < p.otherUntil ? p.otherIncome : 0) + bonus;
     const extra = (t === 0 ? upfront - loan.financed : 0) + (t < loan.years ? loan.payment : 0);
 
     if (isLump(p)) {
       const unsub = t === 0 || (t === 1 && p.strategy === "split") || balance * r > cliff;
-      const cost = annualCost(rec, age, p, unsub) * f;
+      const living = annualCost(rec, age, p, unsub) * f;
+      const cost = living - Math.min(living, Math.max(0, adjust?.spendCut ?? 0) * f);
       if (t === 0) year0Cost = cost;
       const after = balance - (cost - income + extra);
       balance = after > 0 ? after * (1 + r) : after;
     } else {
       const inTexas = t === 0 && p.txMove;
       const plan = (unsub: boolean) => {
-        const gross = annualCost(rec, age, p, unsub) * f - income + extra;
+        const living = annualCost(rec, age, p, unsub) * f;
+        const gross = living - Math.min(living, Math.max(0, adjust?.spendCut ?? 0) * f) - income + extra;
         const fromCash = Math.min(cash, Math.max(0, gross));
         const need = gross - fromCash;
         const w = need > 0 && balance > 0 ? grossUp(need, p, age, inTexas) : 0;
@@ -1029,6 +1038,22 @@ function simulate(
     balances.push(total);
   }
   return { balances, depletedAge, year0Gross, year0Tax, year0Cost, year0FromSavings, stranded };
+}
+
+const covers = (sim: SimResult, goal: number) => sim.depletedAge === null || sim.depletedAge > goal;
+
+function leastThatCovers(probe: (n: number) => boolean): number | null {
+  if (probe(0)) return 0;
+  let hi = 1000;
+  for (let i = 0; i < 18 && !probe(hi); i++) hi *= 2;
+  if (!probe(hi)) return null;
+  let lo = 0;
+  for (let i = 0; i < 28; i++) {
+    const mid = (lo + hi) / 2;
+    if (probe(mid)) hi = mid;
+    else lo = mid;
+  }
+  return Math.ceil(hi);
 }
 
 const money = (n: number) =>
@@ -1072,6 +1097,8 @@ const TIPS: Record<string, string> = {
     "People living there. Groceries, health insurance, Medicare, out-of-pocket medical and household costs are per person. Two or more adults switches filing status to married, joint.",
   "Retirement age":
     "The age you leave your job and the plan starts. The Rule of 55 needs you to be 55 or older that year. Medicare still starts at 65, and Social Security no earlier than 62.",
+  "Money needs to last through age":
+    "The age you still want money left. The plan then shows the monthly spending cut, or the extra yearly income, that gets you there with everything else unchanged.",
   "Year you retire": "The calendar year the plan starts. It times the Social Security cut scenario.",
   "401(k) balance":
     "Your pre-tax 401(k) or traditional IRA balance. Every dollar you take out is taxed as ordinary income in the year you take it.",
@@ -1355,7 +1382,20 @@ export default function RetreatPlan() {
   for (let a = startAge(p); a <= END_AGE; a++) ages.push(String(a));
 
   const lastsLabel = (r: SimResult) => (r.depletedAge === null ? `${END_AGE}+` : String(r.depletedAge));
-  const shortfall = normal.depletedAge !== null && normal.depletedAge < 85;
+  const goal = goalOf(p);
+  const covered = covers(normal, goal);
+  const shortfall = !covered;
+  const probe = (adjust: SimAdjust) =>
+    covers(simulate(p, rec, upfrontTotal, p.inflation, null, land, adjust), goal);
+  const spendCut = covered ? 0 : leastThatCovers((n) => probe({ spendCut: n }));
+  const extraIncome = covered ? 0 : leastThatCovers((n) => probe({ extraIncome: n, incomeUntil: goal }));
+  const cutSim =
+    spendCut != null && spendCut > 0
+      ? simulate(p, rec, upfrontTotal, p.inflation, null, land, { spendCut })
+      : null;
+  const cutLasts = cutSim ? lastsLabel(cutSim) : null;
+  const cutCarriesFurther = cutSim !== null && (cutSim.depletedAge === null || cutSim.depletedAge > goal + 5);
+  const GOAL_AGES = [70, 75, 80, 85, 90, 95];
 
   const allocTaxes = normal.year0Tax;
   const allocOther = coreTotal - land - (up.rv ?? 0);
@@ -1440,9 +1480,44 @@ export default function RetreatPlan() {
           ? `, with Social Security covering ${money(ssAnnual)}/yr starting at ${p.ssAge}.`
           : ", with no Social Security counted."}
         {shortfall
-          ? " Under these assumptions the plan runs short. The levers that move it most are below the chart."
-          : ""}
+          ? ` Under these assumptions it runs out at ${lastsLabel(normal)}, before your target of ${goal}. What it takes to get there is just below.`
+          : ` That covers your target of ${goal}.`}
       </Callout>
+
+      <Stack gap={8}>
+        <Row gap={8} wrap align="center">
+          <Text size="small" tone="secondary">
+            Need the money to last through age
+          </Text>
+          {GOAL_AGES.map((age) => (
+            <Pill key={age} size="sm" active={goal === age} onClick={() => set("goalAge", age)}>
+              {age}
+            </Pill>
+          ))}
+        </Row>
+        <Callout
+          tone={covered ? "success" : "warning"}
+          title={covered ? `Covered through age ${goal}` : `Runs out at ${lastsLabel(normal)}, short of ${goal}`}
+        >
+          {covered
+            ? `With the numbers entered now, money lasts to age ${lastsLabel(normal)}. Pick a later age to see what that would take.`
+            : `That's ${goal - (normal.depletedAge ?? goal)} years early. Keeping everything else the same, either of these closes the gap:`}
+          {!covered && (
+            <Stack gap={4} style={{ marginTop: 6 }}>
+              <Text size="small">
+                {spendCut === null
+                  ? "Spending less can't fix it. Even with living costs at $0, setup and taxes spend the account in the first years. Switch Withdrawal to \"As needed\", trim the setup, or add savings."
+                  : `Spend ${money(spendCut / 12)} less per month, leaving about ${money(Math.max(0, steadyPre65 - spendCut) / 12)}/mo before 65. Both figures are today's dollars, and the cut rises with inflation.${cutCarriesFurther ? ` That same cut actually lasts to ${cutLasts}: this plan fails in the first years, and covering those covers the later ones too.` : ""}`}
+              </Text>
+              <Text size="small">
+                {extraIncome === null
+                  ? "Extra income can't fix it either, for the same reason: the account is gone before the income can refill it."
+                  : `Or earn ${money(extraIncome)} more per year until age ${goal}, on top of any part-time income already entered. Type it into "Part-time income" and set "Part-time work until age" to ${goal}.`}
+              </Text>
+            </Stack>
+          )}
+        </Callout>
+      </Stack>
 
       <Grid columns={4} gap={16}>
         <Stat
@@ -1484,6 +1559,9 @@ export default function RetreatPlan() {
               </Field>
               <Field label="Retirement age">
                 <NumField value={p.retireAge ?? 58} onChange={(n) => set("retireAge", n)} width={64} />
+              </Field>
+              <Field label="Money needs to last through age">
+                <NumField value={p.goalAge ?? 85} onChange={(n) => set("goalAge", n)} width={64} />
               </Field>
               <Field label="Year you retire">
                 <NumField value={p.startYear} onChange={(n) => set("startYear", n)} width={72} />
@@ -1650,8 +1728,8 @@ export default function RetreatPlan() {
           </Text>
           <Grid columns={4} gap={12}>
             <Stat value={lastsLabel(normal)} label="Normal: money lasts to age" tone={shortfall ? "danger" : "success"} />
-            <Stat value={lastsLabel(ssCutSim)} label={`Social Security cut in ${EST.ssCutYear}: lasts to age`} tone={ssCutSim.depletedAge !== null && ssCutSim.depletedAge < 85 ? "danger" : "success"} />
-            <Stat value={lastsLabel(highInf)} label="High inflation: lasts to age" tone={highInf.depletedAge !== null && highInf.depletedAge < 85 ? "danger" : "success"} />
+            <Stat value={lastsLabel(ssCutSim)} label={`Social Security cut in ${EST.ssCutYear}: lasts to age`} tone={covers(ssCutSim, goal) ? "success" : "danger"} />
+            <Stat value={lastsLabel(highInf)} label="High inflation: lasts to age" tone={covers(highInf, goal) ? "success" : "danger"} />
             <Stat value={kMoney(collapse.stranded ?? 0)} label={`Collapse: cash stranded at ${p.collapseAge}`} tone="warning" />
           </Grid>
           <Callout tone="info" title="What moves the outcome most">
