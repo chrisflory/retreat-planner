@@ -405,20 +405,35 @@ export function LineChart({
   series = [],
   valuePrefix = "",
   height = 260,
+  yFloor,
 }: {
   categories?: string[];
   series?: Series[];
   valuePrefix?: string;
   height?: number;
+  /** Lowest dollar the axis will show. A deeper shortfall runs off the bottom. */
+  yFloor?: number;
 }) {
   const fmt = compact(valuePrefix);
+  const values = series.flatMap((s) => s.data).filter((n) => Number.isFinite(n));
+  const lowest = values.length ? Math.min(...values) : 0;
+  const highest = values.length ? Math.max(...values) : 0;
+  const yMin = yFloor === undefined ? undefined : Math.max(Math.min(lowest, 0), yFloor);
+  const yMax = yMin === undefined ? undefined : Math.max(highest, 0) + Math.max(highest - yMin, 1) * 0.05;
   return (
     <div style={{ width: "100%", height }}>
       <ResponsiveContainer>
         <RLineChart data={toRows(categories, series)} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="var(--stroke)" vertical={false} />
           <XAxis dataKey="cat" tick={{ fill: "var(--text-tertiary)", fontSize: 11 }} stroke="var(--stroke)" interval="preserveStartEnd" />
-          <YAxis tickFormatter={fmt} tick={{ fill: "var(--text-tertiary)", fontSize: 11 }} stroke="var(--stroke)" width={60} />
+          <YAxis
+            tickFormatter={fmt}
+            tick={{ fill: "var(--text-tertiary)", fontSize: 11 }}
+            stroke="var(--stroke)"
+            width={60}
+            domain={yMin === undefined || yMax === undefined ? undefined : [yMin, yMax]}
+            allowDataOverflow={yMin !== undefined}
+          />
           <Tooltip {...tooltipStyle} formatter={(v) => fmt(Number(v))} labelFormatter={(l) => `Age ${l}`} />
           {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
           <ReferenceLine y={0} stroke="var(--text-tertiary)" strokeDasharray="4 4" />

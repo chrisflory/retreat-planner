@@ -1915,11 +1915,14 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             ]}
             valuePrefix="$"
             height={300}
+            yFloor={-100_000}
           />
           <Text size="small" tone="tertiary">
             X-axis: age. Y-axis: {isLump(p) ? "cash on hand after tax" : "pre-tax 401(k)/IRA balance"}
             {savings > 0 ? " plus other savings" : ""}, in
-            nominal dollars. Below $0 is the running shortfall: money you'd have to find somewhere else. Model:
+            nominal dollars. Below $0 is the running shortfall: money you'd have to find somewhere else. The
+            scale stops at -$100,000, and a deeper shortfall runs off the bottom. Point at a year to see the real
+            balance. Model:
             spending inflates yearly, Social Security gets matching COLAs, savings earn the return rate. Tax on
             interest is ignored.
           </Text>
