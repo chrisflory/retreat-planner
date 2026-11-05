@@ -670,6 +670,29 @@ function Field({ label, children }: { label: string; children: Parameters<typeof
   );
 }
 
+export type { StateId };
+export { STATES, STATE_IDS };
+
+function readStored<T extends object>(key: string, defaults: T): T {
+  try {
+    const raw = localStorage.getItem(`retreat-planner:${key}`);
+    return raw ? { ...defaults, ...JSON.parse(raw) } : { ...defaults };
+  } catch {
+    return { ...defaults };
+  }
+}
+
+export function loadListingIntoPlan(state: StateId | null, price: number) {
+  let p = readStored<Params>("params-v2", DEFAULT_PARAMS);
+  let up = readStored<Record<string, number>>("upfront-v2", PRESET_PLANNED);
+  let rec = readStored<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
+  if (state && STATES[state]) [p, up, rec] = applyState(state, p, up, rec);
+  up = { ...up, land: Math.round(price) };
+  localStorage.setItem("retreat-planner:params-v2", JSON.stringify(p));
+  localStorage.setItem("retreat-planner:upfront-v2", JSON.stringify(up));
+  localStorage.setItem("retreat-planner:recurring-v2", JSON.stringify(rec));
+}
+
 export default function OklahomaRetreatPlan() {
   const [storedP, setP] = useCanvasState<Params>("params-v2", DEFAULT_PARAMS);
   const [storedUp, setUp] = useCanvasState<Record<string, number>>("upfront-v2", PRESET_PLANNED);

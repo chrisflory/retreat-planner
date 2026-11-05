@@ -1,0 +1,517 @@
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  Callout,
+  Card,
+  CardBody,
+  CardHeader,
+  Divider,
+  Grid,
+  H1,
+  H2,
+  H3,
+  Pill,
+  Row,
+  Select,
+  Stack,
+  Table,
+  Text,
+  TextInput,
+  Toggle,
+  useCanvasState,
+} from "./ui";
+import { STATES, STATE_IDS, type StateId } from "./App";
+import { checkWater, fmtDist, miles, M_PER_MILE, parseLatLon, propertyRadiusM, runChecks, type CheckResult, type WaterFeature } from "./geo";
+import { LandMap } from "./LandMap";
+import { openExternal } from "./net";
+
+type PropType = "any" | "hunting" | "recreational" | "farms" | "undeveloped" | "timber" | "waterfront";
+
+const PROP_TYPES: Record<PropType, { label: string; lw: string; lc: string }> = {
+  any: { label: "All land", lw: "land", lc: "all-land" },
+  hunting: { label: "Hunting", lw: "hunting-property", lc: "hunting-land" },
+  recreational: { label: "Recreational", lw: "recreational-property", lc: "recreational-property" },
+  farms: { label: "Farms and ranches", lw: "farms-and-ranches", lc: "ranches" },
+  undeveloped: { label: "Undeveloped", lw: "undeveloped-land", lc: "undeveloped-land" },
+  timber: { label: "Timberland", lw: "timberland-property", lc: "timberland" },
+  waterfront: { label: "Waterfront", lw: "waterfront-property", lc: "waterfront-property" },
+};
+
+const STATE_META: Record<StateId, { code: string; counties: string; view: [number, number, number] }> = {
+  OK: { code: "OK", counties: "Pushmataha, Latimer, Le Flore, McCurtain, Pittsburg", view: [34.5, -95.2, 8] },
+  MT: { code: "MT", counties: "Fergus, Judith Basin, Meagher", view: [47.0, -109.8, 7] },
+  WY: { code: "WY", counties: "Big Horn, Park, Washakie, Hot Springs", view: [44.3, -108.3, 7] },
+  ID: { code: "ID", counties: "Boundary, Bonner, Benewah", view: [48.0, -116.6, 8] },
+  SD: { code: "SD", counties: "Butte, Perkins, Harding, Meade", view: [45.0, -103.0, 7] },
+  ND: { code: "ND", counties: "McKenzie, Dunn, Mercer", view: [47.5, -102.6, 7] },
+  TN: { code: "TN", counties: "Cumberland, Van Buren, Grundy, Bledsoe", view: [35.7, -85.2, 8] },
+  AR: { code: "AR", counties: "Polk, Montgomery, Newton, Searcy", view: [35.0, -93.4, 7] },
+  MO: { code: "MO", counties: "Shannon, Texas, Howell, Douglas", view: [37.1, -91.9, 8] },
+  WV: { code: "WV", counties: "Webster, Nicholas, Pocahontas", view: [38.4, -80.5, 8] },
+  MS: { code: "MS", counties: "Winston, Choctaw, Attala", view: [33.1, -89.3, 8] },
+};
+
+type Criteria = {
+  state: StateId;
+  counties: string;
+  acresMin: number;
+  acresMax: number;
+  priceMax: number;
+  type: PropType;
+  waterOnLand: boolean;
+  waterWithinMi: number;
+  perennial: boolean;
+  fishing: boolean;
+  powerWithinMi: number;
+  noFlood: boolean;
+  hospitalWithinMi: number;
+  townWithinMi: number;
+};
+
+const DEFAULT_CRITERIA: Criteria = {
+  state: "OK",
+  counties: STATE_META.OK.counties,
+  acresMin: 40,
+  acresMax: 80,
+  priceMax: 125000,
+  type: "hunting",
+  waterOnLand: false,
+  waterWithinMi: 1,
+  perennial: true,
+  fishing: true,
+  powerWithinMi: 1,
+  noFlood: true,
+  hospitalWithinMi: 45,
+  townWithinMi: 20,
+};
+
+type Listing = {
+  id: string;
+  name: string;
+  url: string;
+  price: number;
+  acres: number;
+  lat: number;
+  lon: number;
+  notes: string;
+  check?: Omit<CheckResult, "water"> & { water?: Omit<NonNullable<CheckResult["water"]>, "features"> };
+  checkedAt?: string;
+};
+
+const slug = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const title = (s: string) => s.trim().split(/\s+/).map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join("-");
+const money = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
+
+function searchLinks(c: Criteria, county: string | null) {
+  const st = STATES[c.state];
+  const code = STATE_META[c.state].code;
+  const t = PROP_TYPES[c.type];
+  const place = county ? `${slug(county)}-county-${slug(st.name)}` : slug(st.name);
+  const lcPlace = county ? `${title(county)}-County-${code}` : st.name.replace(/\s+/g, "-");
+  const price = c.priceMax > 0 ? `under-${Math.round(c.priceMax)}/` : "";
+  const where = county ? `"${county} County" ${code}` : st.name;
+  const google = `${where} land for sale ${c.acresMin}-${c.acresMax} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
+  return [
+    { site: "LandWatch", url: `https://www.landwatch.com/${place}-${t.lw}-for-sale` },
+    { site: "Land.com", url: `https://www.land.com/${lcPlace}/${t.lc}/${price}` },
+    { site: "Lands of America", url: `https://www.landsofamerica.com/${lcPlace}/${t.lc}/${price}` },
+    { site: "Zillow (land)", url: county ? `https://www.zillow.com/${slug(county)}-county-${code.toLowerCase()}/land/` : `https://www.zillow.com/${code.toLowerCase()}/land/` },
+    { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
+  ];
+}
+
+type Verdict = "pass" | "fail" | "unknown";
+type Row = { label: string; value: string; verdict: Verdict; note?: string };
+
+function evaluate(l: Listing, c: Criteria): Row[] {
+  const k = l.check;
+  const w = k?.water;
+  const r = propertyRadiusM(l.acres);
+  const rows: Row[] = [];
+  const v = (ok: boolean | null | undefined): Verdict => (ok === null || ok === undefined ? "unknown" : ok ? "pass" : "fail");
+  const ppa = l.acres > 0 ? l.price / l.acres : 0;
+  rows.push({ label: `Price under ${money(c.priceMax)}`, value: `${money(l.price)} (${money(ppa)}/acre)`, verdict: v(l.price > 0 ? l.price <= c.priceMax : null) });
+  rows.push({ label: `${c.acresMin}–${c.acresMax} acres`, value: `${l.acres} acres`, verdict: v(l.acres > 0 ? l.acres >= c.acresMin && l.acres <= c.acresMax : null) });
+  if (k?.stateCode) {
+    const inPlan = STATE_IDS.find((id) => STATE_META[id].code === k.stateCode);
+    rows.push({ label: "County", value: `${k.county ?? "?"}, ${k.stateCode}`, verdict: inPlan ? "pass" : "unknown", note: inPlan ? undefined : "Not one of the planner's states" });
+  }
+  const water = w ? w.nearestM : undefined;
+  if (c.waterOnLand)
+    rows.push({ label: "Water on the land", value: w ? fmtDist(w.nearestM) + (w.nearestName ? ` (${w.nearestName})` : "") : "not checked", verdict: v(w ? water !== null && water! <= r : null), note: "Within the property's approximate footprint around the pin" });
+  if (c.waterWithinMi > 0)
+    rows.push({ label: `Water within ${c.waterWithinMi} mi`, value: w ? fmtDist(w.nearestM) + (w.nearestName ? ` (${w.nearestName})` : "") : "not checked", verdict: v(w ? water !== null && miles(water!) <= c.waterWithinMi : null) });
+  if (c.perennial)
+    rows.push({ label: `Year-round (perennial) water within ${Math.max(c.waterWithinMi, 1)} mi`, value: w ? fmtDist(w.nearestPerennialM) : "not checked", verdict: v(w ? w.nearestPerennialM !== null && miles(w.nearestPerennialM) <= Math.max(c.waterWithinMi, 1) : null), note: "USGS-mapped; seasonal creeks don't count" });
+  if (c.fishing)
+    rows.push({ label: "Fishing: pond, lake or year-round stream within 1 mi", value: w ? `pond/lake ${fmtDist(w.nearestPondM)}, stream ${fmtDist(w.nearestPerennialM)}` : "not checked", verdict: v(w ? Math.min(w.nearestPondM ?? Infinity, w.nearestPerennialM ?? Infinity) <= M_PER_MILE : null), note: "Stock ponds under an acre rarely hold fish" });
+  if (c.noFlood)
+    rows.push({
+      label: "Not in a FEMA high-risk flood zone",
+      value: k?.flood ? (k.flood.zone ? `Zone ${k.flood.zone}` : "No FEMA flood map for this spot") : k?.errors.flood ? `check failed: ${k.errors.flood}` : "not checked",
+      verdict: k?.flood ? (k.flood.zone ? v(!k.flood.highRisk) : "unknown") : "unknown",
+      note: "At the pin only; check the build site on the FEMA map",
+    });
+  if (c.powerWithinMi > 0)
+    rows.push({
+      label: `Power line within ${c.powerWithinMi} mi`,
+      value: k?.power ? fmtDist(k.power.nearestM) + (k.power.voltage ? ` (${Number(k.power.voltage) / 1000} kV)` : "") : k?.errors.osm ? `check failed: ${k.errors.osm}` : "not checked",
+      verdict: k?.power ? (k.power.nearestM !== null && miles(k.power.nearestM) <= c.powerWithinMi ? "pass" : "unknown") : "unknown",
+      note: "OpenStreetMap misses many rural lines. Ask the co-op",
+    });
+  if (c.hospitalWithinMi > 0)
+    rows.push({
+      label: `Hospital within ${c.hospitalWithinMi} mi (straight line)`,
+      value: k?.hospital ? `${k.hospital.name}, ${miles(k.hospital.m).toFixed(0)} mi` : k?.hospital === null ? "none within 50 mi" : "not checked",
+      verdict: k?.hospital !== undefined ? v(k.hospital !== null && miles(k.hospital.m) <= c.hospitalWithinMi) : "unknown",
+    });
+  if (c.townWithinMi > 0)
+    rows.push({
+      label: `Town within ${c.townWithinMi} mi (straight line)`,
+      value: k?.town ? `${k.town.name}, ${miles(k.town.m).toFixed(0)} mi` : k?.town === null ? "none within 40 mi" : "not checked",
+      verdict: k?.town !== undefined ? v(k.town !== null && miles(k.town.m) <= c.townWithinMi) : "unknown",
+    });
+  if (k?.elevationFt !== undefined) rows.push({ label: "Elevation at pin", value: `${Math.round(k.elevationFt).toLocaleString("en-US")} ft`, verdict: "unknown" });
+  return rows;
+}
+
+const TONE: Record<Verdict, string> = { pass: "#22c55e", fail: "#ef4444", unknown: "#a3a3a3" };
+const VERDICT_TEXT: Record<Verdict, string> = { pass: "Yes", fail: "No", unknown: "?" };
+
+function score(rows: Row[]) {
+  const judged = rows.filter((r) => r.label !== "Elevation at pin" && r.label !== "County");
+  const pass = judged.filter((r) => r.verdict === "pass").length;
+  const fail = judged.filter((r) => r.verdict === "fail").length;
+  return { pass, fail, total: judged.length, tone: fail > 0 ? (pass >= judged.length - 1 ? "#f59e0b" : TONE.fail) : pass === judged.length ? TONE.pass : "#3b82f6" };
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Row gap={8} align="center" justify="space-between">
+      <Text size="small" tone="secondary">
+        {label}
+      </Text>
+      {children}
+    </Row>
+  );
+}
+
+function Num({ value, onChange, width = 90 }: { value: number; onChange: (n: number) => void; width?: number }) {
+  return <TextInput type="number" value={String(value)} onChange={(v) => onChange(v === "" ? 0 : Number(v))} style={{ width }} />;
+}
+
+const EMPTY_FORM = { name: "", url: "", price: "", acres: "", where: "", notes: "" };
+
+export default function LandSearch({ onUseInPlan }: { onUseInPlan: (state: StateId | null, price: number) => void }) {
+  const [storedC, setC] = useCanvasState<Criteria>("land-criteria-v1", DEFAULT_CRITERIA);
+  const c: Criteria = { ...DEFAULT_CRITERIA, ...storedC };
+  const [listings, setListings] = useCanvasState<Listing[]>("land-listings-v1", []);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [formError, setFormError] = useState("");
+  const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [waterById, setWaterById] = useState<Record<string, WaterFeature[]>>({});
+
+  const set = <K extends keyof Criteria>(k: K, v: Criteria[K]) => setC((prev) => ({ ...DEFAULT_CRITERIA, ...prev, [k]: v }));
+  const pending = parseLatLon(form.where);
+  const counties = c.counties.split(",").map((s) => s.trim()).filter(Boolean);
+  const selected = listings.find((l) => l.id === selectedId) ?? null;
+  const evaluated = listings.map((l) => ({ l, rows: evaluate(l, c) }));
+
+  useEffect(() => {
+    if (!selected || waterById[selected.id] || busy[selected.id]) return;
+    let live = true;
+    checkWater(selected.lat, selected.lon)
+      .then((w) => live && setWaterById((m) => ({ ...m, [selected.id]: w.features })))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [selectedId]);
+
+  const check = async (l: Listing) => {
+    setBusy((b) => ({ ...b, [l.id]: true }));
+    const save = (r: CheckResult) => {
+      const { water, ...rest } = r;
+      if (water) setWaterById((m) => ({ ...m, [l.id]: water.features }));
+      const slim = { ...rest, water: water ? { nearestM: water.nearestM, nearestName: water.nearestName, nearestPerennialM: water.nearestPerennialM, nearestPondM: water.nearestPondM } : undefined };
+      setListings((prev) => prev.map((x) => (x.id === l.id ? { ...x, check: slim, checkedAt: new Date().toISOString() } : x)));
+    };
+    const final = await runChecks(l.lat, l.lon, save);
+    save(final);
+    setBusy((b) => ({ ...b, [l.id]: false }));
+  };
+
+  const add = () => {
+    const loc = parseLatLon(form.where);
+    const price = Number(form.price.replace(/[$,\s]/g, ""));
+    const acres = Number(form.acres.replace(/[,\s]/g, ""));
+    if (!loc) return setFormError("Click the map, or paste coordinates like 34.4012, -95.4123 (a Google Maps link works too).");
+    if (!(price > 0) || !(acres > 0)) return setFormError("Enter the asking price and the acreage.");
+    const l: Listing = {
+      id: Math.random().toString(36).slice(2, 10),
+      name: form.name.trim() || `${acres} acres`,
+      url: form.url.trim(),
+      price,
+      acres,
+      lat: loc[0],
+      lon: loc[1],
+      notes: form.notes.trim(),
+    };
+    setListings((prev) => [...prev, l]);
+    setForm(EMPTY_FORM);
+    setFormError("");
+    setSelectedId(l.id);
+    void check(l);
+  };
+
+  const remove = (id: string) => {
+    setListings((prev) => prev.filter((x) => x.id !== id));
+    if (selectedId === id) setSelectedId(null);
+  };
+
+  const planState = (l: Listing): StateId | null =>
+    STATE_IDS.find((id) => STATE_META[id].code === l.check?.stateCode) ?? null;
+
+  const linkRows = [null, ...counties].map((county) => [
+    <Text key="w" weight="semibold">{county ? `${county} County` : `All of ${STATES[c.state].name}`}</Text>,
+    <Row key="l" gap={6} wrap>
+      {searchLinks(c, county).map((s) => (
+        <Pill key={s.site} size="sm" onClick={() => void openExternal(s.url)}>
+          {s.site}
+        </Pill>
+      ))}
+    </Row>,
+  ]);
+
+  return (
+    <Stack gap={24} style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
+      <Stack gap={6}>
+        <H1>Land search</H1>
+        <Text tone="secondary">
+          Set what you're looking for, open the listing sites already filtered to your counties and property type, then
+          drop each promising listing on the map. The app checks it against free government and map data: USGS water,
+          FEMA flood zones, elevation, county, mapped power lines, and the nearest hospital and town. It scores the
+          listing against your criteria and can load the price into the retirement plan.
+        </Text>
+      </Stack>
+
+      <Grid columns="minmax(0, 340px) minmax(0, 1fr)" gap={20} align="start">
+        <Card>
+          <CardHeader>What you're looking for</CardHeader>
+          <CardBody>
+            <Stack gap={10}>
+              <Field label="State">
+                <Select
+                  value={c.state}
+                  onChange={(v) => setC((prev) => ({ ...DEFAULT_CRITERIA, ...prev, state: v as StateId, counties: STATE_META[v as StateId].counties }))}
+                  options={STATE_IDS.map((id) => ({ value: id, label: STATES[id].name }))}
+                />
+              </Field>
+              <Stack gap={4}>
+                <Text size="small" tone="secondary">
+                  Counties (comma-separated)
+                </Text>
+                <TextInput value={c.counties} onChange={(v) => set("counties", v)} style={{ width: "100%" }} />
+              </Stack>
+              <Field label="Property type">
+                <Select value={c.type} onChange={(v) => set("type", v as PropType)} options={(Object.keys(PROP_TYPES) as PropType[]).map((k) => ({ value: k, label: PROP_TYPES[k].label }))} />
+              </Field>
+              <Field label="Acres, minimum">
+                <Num value={c.acresMin} onChange={(n) => set("acresMin", n)} width={70} />
+              </Field>
+              <Field label="Acres, maximum">
+                <Num value={c.acresMax} onChange={(n) => set("acresMax", n)} width={70} />
+              </Field>
+              <Field label="Price, maximum">
+                <Num value={c.priceMax} onChange={(n) => set("priceMax", n)} />
+              </Field>
+              <Divider />
+              <Field label="Water on the land">
+                <Toggle checked={c.waterOnLand} onChange={(v) => set("waterOnLand", v)} />
+              </Field>
+              <Field label="Any water within, miles (0 = skip)">
+                <Num value={c.waterWithinMi} onChange={(n) => set("waterWithinMi", n)} width={70} />
+              </Field>
+              <Field label="Require year-round water">
+                <Toggle checked={c.perennial} onChange={(v) => set("perennial", v)} />
+              </Field>
+              <Field label="Fishing nearby">
+                <Toggle checked={c.fishing} onChange={(v) => set("fishing", v)} />
+              </Field>
+              <Field label="Power line within, miles (0 = skip)">
+                <Num value={c.powerWithinMi} onChange={(n) => set("powerWithinMi", n)} width={70} />
+              </Field>
+              <Field label="Avoid FEMA flood zones">
+                <Toggle checked={c.noFlood} onChange={(v) => set("noFlood", v)} />
+              </Field>
+              <Field label="Hospital within, miles (0 = skip)">
+                <Num value={c.hospitalWithinMi} onChange={(n) => set("hospitalWithinMi", n)} width={70} />
+              </Field>
+              <Field label="Town within, miles (0 = skip)">
+                <Num value={c.townWithinMi} onChange={(n) => set("townWithinMi", n)} width={70} />
+              </Field>
+              <Divider />
+              <Pill onClick={() => setC(DEFAULT_CRITERIA)}>Reset criteria</Pill>
+            </Stack>
+          </CardBody>
+        </Card>
+
+        <Stack gap={12}>
+          <H2>1. Search the listing sites</H2>
+          <Text tone="secondary">
+            Each button opens that site in your browser, filtered to the county and property type
+            {c.priceMax > 0 ? `, and to under ${money(c.priceMax)} on Land.com and Lands of America` : ""}. Set{" "}
+            {c.acresMin}–{c.acresMax} acres (and price on LandWatch and Zillow) in the site's own filters. Save the
+            search on the site to get new listings by email.
+          </Text>
+          <Table headers={["Where", "Open search"]} rows={linkRows} />
+          <Callout tone="neutral" title="Why the app doesn't scrape the sites">
+            LandWatch, Land.com and Lands of America are owned by CoStar, and their terms ban automated access. They
+            also block bots. Opening the searches in your browser and adding the good listings here keeps you within
+            their rules, and their free email alerts do the watching for you.
+          </Callout>
+          <Callout tone="info" title="Also worth checking">
+            The listing's county GIS or appraiser site (for parcel lines, owner and taxes), the electric co-op (a
+            written line-extension quote), starlink.com/map (service at the address), and your state's
+            wildlife department maps of public hunting land nearby.
+          </Callout>
+        </Stack>
+      </Grid>
+
+      <Stack gap={12}>
+        <H2>2. Check a listing</H2>
+        <Grid columns="minmax(0, 360px) minmax(0, 1fr)" gap={20} align="start">
+          <Card>
+            <CardHeader>Add a listing</CardHeader>
+            <CardBody>
+              <Stack gap={10}>
+                <Text size="small" tone="secondary">
+                  Click the property on the map, or paste coordinates or a Google Maps link. Most listings show a map
+                  pin or GPS coordinates.
+                </Text>
+                <TextInput value={form.where} onChange={(v) => setForm({ ...form, where: v })} placeholder="34.4012, -95.4123" style={{ width: "100%" }} />
+                <Text size="small" tone={pending ? "secondary" : "tertiary"}>
+                  {pending ? `Location: ${pending[0].toFixed(5)}, ${pending[1].toFixed(5)}` : "No location yet"}
+                </Text>
+                <TextInput value={form.name} onChange={(v) => setForm({ ...form, name: v })} placeholder="Name, e.g. Kiamichi 60" style={{ width: "100%" }} />
+                <TextInput value={form.url} onChange={(v) => setForm({ ...form, url: v })} placeholder="Listing link (optional)" style={{ width: "100%" }} />
+                <Row gap={8}>
+                  <TextInput value={form.price} onChange={(v) => setForm({ ...form, price: v })} placeholder="Price" style={{ width: "50%" }} />
+                  <TextInput value={form.acres} onChange={(v) => setForm({ ...form, acres: v })} placeholder="Acres" style={{ width: "50%" }} />
+                </Row>
+                <TextInput value={form.notes} onChange={(v) => setForm({ ...form, notes: v })} placeholder="Notes: well, power at road, owner financing…" style={{ width: "100%" }} />
+                {formError && (
+                  <Text size="small" tone="secondary" style={{ color: "var(--c-red)" }}>
+                    {formError}
+                  </Text>
+                )}
+                <Pill onClick={add}>Add and check</Pill>
+              </Stack>
+            </CardBody>
+          </Card>
+          <Stack gap={8}>
+            <LandMap
+              center={STATE_META[c.state].view}
+              listings={evaluated.map(({ l, rows }) => ({ id: l.id, name: l.name, lat: l.lat, lon: l.lon, acres: l.acres, tone: l.check ? score(rows).tone : "#a3a3a3" }))}
+              selectedId={selectedId}
+              pending={pending}
+              water={selectedId ? waterById[selectedId] ?? [] : []}
+              onPick={(lat, lon) => setForm((f) => ({ ...f, where: `${lat.toFixed(5)}, ${lon.toFixed(5)}` }))}
+              onSelect={setSelectedId}
+            />
+            <Text size="small" tone="tertiary">
+              Dot colors: green meets everything, blue has nothing failing yet, amber misses one, red misses more. The
+              selected listing shows its approximate footprint (a circle of its acreage around the pin), a dashed
+              1-mile ring, and USGS-mapped water: solid blue is year-round, dashed is seasonal. Switch to aerial view
+              with the layer button.
+            </Text>
+          </Stack>
+        </Grid>
+
+        {listings.length > 0 && (
+          <Table
+            headers={["Listing", "Price", "Acres", "$/acre", "Nearest water", "Flood zone", "Power line", "Hospital", "Meets", ""]}
+            columnAlign={["left", "right", "right", "right", "left", "left", "left", "left", "left", "left"]}
+            rowTone={evaluated.map(({ l }) => (l.id === selectedId ? "info" : undefined))}
+            rows={evaluated.map(({ l, rows }) => {
+              const s = score(rows);
+              const k = l.check;
+              return [
+                <Pill key="n" size="sm" active={l.id === selectedId} onClick={() => setSelectedId(l.id)}>
+                  {l.name}
+                </Pill>,
+                money(l.price),
+                String(l.acres),
+                money(l.price / l.acres),
+                k?.water ? fmtDist(k.water.nearestM) : k?.errors.water ? "error" : busy[l.id] ? "checking…" : "—",
+                k?.flood ? (k.flood.zone ?? "unmapped") : k?.errors.flood ? "error" : busy[l.id] ? "checking…" : "—",
+                k?.power ? fmtDist(k.power.nearestM) : k?.errors.osm ? "error" : busy[l.id] ? "checking…" : "—",
+                k?.hospital ? `${miles(k.hospital.m).toFixed(0)} mi` : k?.hospital === null ? "50+ mi" : busy[l.id] ? "checking…" : "—",
+                <Text key="s" size="small" weight="semibold" style={{ color: k ? s.tone : undefined }}>
+                  {k ? `${s.pass} of ${s.total}` : "—"}
+                </Text>,
+                <Row key="a" gap={4} wrap>
+                  {l.url && (
+                    <Pill size="sm" onClick={() => void openExternal(l.url)}>
+                      Open
+                    </Pill>
+                  )}
+                  <Pill size="sm" onClick={() => void check(l)}>
+                    {busy[l.id] ? "Checking…" : "Recheck"}
+                  </Pill>
+                  <Pill size="sm" onClick={() => onUseInPlan(planState(l), l.price)}>
+                    Use in plan
+                  </Pill>
+                  <Pill size="sm" onClick={() => remove(l.id)}>
+                    Remove
+                  </Pill>
+                </Row>,
+              ];
+            })}
+          />
+        )}
+
+        {selected && (
+          <Stack gap={8}>
+            <H3>{selected.name}: how it measures up</H3>
+            <Table
+              headers={["Criterion", "Finding", "Meets?", "Note"]}
+              rowTone={evaluate(selected, c).map((r) => (r.verdict === "pass" ? "success" : r.verdict === "fail" ? "danger" : "neutral"))}
+              rows={evaluate(selected, c).map((r) => [
+                r.label,
+                r.value,
+                <Text key="v" size="small" weight="semibold" style={{ color: TONE[r.verdict] }}>
+                  {r.label === "Elevation at pin" ? "" : VERDICT_TEXT[r.verdict]}
+                </Text>,
+                <Text key="n" size="small" tone="tertiary">
+                  {r.note ?? ""}
+                </Text>,
+              ])}
+            />
+            {selected.notes && (
+              <Text size="small" tone="secondary">
+                Notes: {selected.notes}
+              </Text>
+            )}
+            {selected.check && Object.keys(selected.check.errors).length > 0 && (
+              <Callout tone="warning" title="Some checks didn't finish">
+                {Object.entries(selected.check.errors)
+                  .map(([k, v]) => `${k === "osm" ? "Power, hospital and town (OpenStreetMap)" : k}: ${v}`)
+                  .join(". ")}
+                . These public servers are sometimes slow or busy. Click Recheck in a minute.
+              </Callout>
+            )}
+            <Text size="small" tone="tertiary">
+              "Use in plan" sets the retirement plan's land cost to {money(selected.price)}
+              {planState(selected) ? ` and switches the plan to ${STATES[planState(selected)!].name}` : ""}. The plan
+              still assumes 50 acres for property tax and upkeep. Distances to the hospital and town are straight-line,
+              so expect 1.3–1.5× that by road. The checks use the pin as the center of the property. Walk the land and
+              check the county parcel map before you trust any of it. Property radius at {selected.acres} acres: about{" "}
+              {fmtDist(propertyRadiusM(selected.acres))}.
+            </Text>
+          </Stack>
+        )}
+      </Stack>
+    </Stack>
+  );
+}

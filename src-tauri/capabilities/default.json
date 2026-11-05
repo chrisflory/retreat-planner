@@ -2,5 +2,21 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "https://hydro.nationalmap.gov/*" },
+        { "url": "https://epqs.nationalmap.gov/*" },
+        { "url": "https://hazards.fema.gov/*" },
+        { "url": "https://geo.fcc.gov/*" },
+        { "url": "https://overpass-api.de/*" }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    }
+  ]
 }
