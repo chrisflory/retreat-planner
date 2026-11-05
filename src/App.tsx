@@ -57,6 +57,11 @@ type Params = {
   hogsPerYear: number;
   elkPerYear: number;
   meatValue: number;
+  chickens: boolean;
+  garden: boolean;
+  hens: number;
+  eggDozen: number;
+  gardenSave: number;
   state: StateId;
   txMove: boolean;
   startYear: number;
@@ -660,6 +665,11 @@ const DEFAULT_PARAMS: Params = {
   hogsPerYear: 4,
   elkPerYear: 0,
   meatValue: 5,
+  chickens: true,
+  garden: true,
+  hens: 6,
+  eggDozen: 4,
+  gardenSave: 700,
   state: "OK",
   txMove: true,
   startYear: 2027,
@@ -706,6 +716,9 @@ const POWER: Record<
 };
 const POWER_IDS = Object.keys(POWER) as PowerMode[];
 
+const EGGS_PER_HEN = 200;
+const chickenUpkeep = (hens: number) => Math.round(Math.max(0, hens) * (350 / 6));
+
 const KCAL_VENISON_LB = 550;
 const KCAL_HOG_LB = 800;
 const KCAL_LARD_LB = 4000;
@@ -722,12 +735,19 @@ const upAmount = (up: Record<string, number>, id: string, p: Params) =>
   (up[id] ?? 0) * (PER_PERSON_UPFRONT.has(id) ? adultsOf(p) : 1);
 const acaCliff = (p: Params) => 4 * (15650 + 5500 * (adultsOf(p) - 1));
 
-type Group = "core" | "hardening" | "hunting";
+type Group = "core" | "hardening" | "hunting" | "food";
 
 function groupOf(u: UpfrontItem, p: Params): Group {
+  if (u.food) return "food";
   if (u.hunting) return "hunting";
   if (u.id === "offgrid" && p.powerMode !== "grid") return "core";
   return u.hardening ? "hardening" : "core";
+}
+
+function foodCounted(u: UpfrontItem, p: Params) {
+  if (u.food === "chickens") return p.chickens;
+  if (u.food === "garden") return p.garden;
+  return true;
 }
 
 function upfrontTotalFor(p: Params, up: Record<string, number>): number {
@@ -735,6 +755,7 @@ function upfrontTotalFor(p: Params, up: Record<string, number>): number {
     const g = groupOf(u, p);
     if (g === "hunting" && !p.hunting) return s;
     if (g === "hardening" && !p.hardening) return s;
+    if (g === "food" && !foodCounted(u, p)) return s;
     return s + upAmount(up, u.id, p);
   }, 0);
 }
@@ -751,7 +772,14 @@ function huntYield(p: Params) {
   return { deerLb, hogLb, elkLb, lardLb, meatLb: deerLb + hogLb + elkLb, kcal, need, share: kcal / need };
 }
 
-type UpfrontItem = { id: string; label: string; note: string; hardening: boolean; hunting?: boolean };
+type UpfrontItem = {
+  id: string;
+  label: string;
+  note: string;
+  hardening: boolean;
+  hunting?: boolean;
+  food?: "chickens" | "garden";
+};
 
 const UPFRONT: UpfrontItem[] = [
   { id: "land", label: "Land, 50 acres", note: "Acres × the state's $/acre under Estimates; edit to match a real listing", hardening: false },
@@ -776,7 +804,9 @@ const UPFRONT: UpfrontItem[] = [
   { id: "offgrid", label: "Solar + LiFePO4 battery bank", note: "Sized for well, fridge, fans, lights; not RV A/C", hardening: true },
   { id: "cabin", label: "Wood stove + insulated small cabin", note: "Fallback heat once stored propane runs out", hardening: true },
   { id: "food", label: "1-year food storage, per person", note: "~450 lb grains, beans, oil per person, plus canned goods", hardening: true },
-  { id: "garden", label: "Garden, seeds, canning, chickens + coop", note: "", hardening: true },
+  { id: "garden", label: "Canning and dry storage", note: "Jars, extra lids and shelves. The coop and the garden fence are their own switches, not this line.", hardening: true },
+  { id: "coop", label: "Chicken coop, hardware-cloth run, first hens", note: "Solid coop, 1/2-inch hardware cloth, a buried or pinned apron, and latches a raccoon can't open. Sized for about six hens.", hardening: false, food: "chickens" },
+  { id: "plot", label: "Fenced garden, drip line, tools", note: "The fence is most of this. A chest-high fence does not stop deer.", hardening: false, food: "garden" },
   { id: "rain", label: "Rain catchment + gravity filters", note: "Backup water and garden irrigation", hardening: true },
   { id: "medical", label: "Medical kit + extra Rx + dental work, per person", note: "Have dental work done before you leave insurance", hardening: true },
   { id: "comms", label: "Ham/GMRS radios, lighting, security", note: "", hardening: true },
@@ -793,7 +823,7 @@ const PRESET_PLANNED: Record<string, number> = {
   land: 75000, winter: 0, rv: 40000, closing: 3000, well: 15000, septic: 9000, power: 10000,
   rvhookup: 2500, starlink: 500, generator: 1200, pad: 5000,
   barn: 10000, shelter: 5000, safety: 1200, propane: 3500, woodheat: 0, tractor: 10000, fence: 5000,
-  handpump: 3000, offgrid: 15000, cabin: 15000, food: 3000, garden: 4000, rain: 3000,
+  handpump: 3000, offgrid: 15000, cabin: 15000, food: 3000, garden: 800, coop: 2200, plot: 1600, rain: 3000,
   medical: 1000, comms: 2500, fuel: 3000,
   rifle: 1000, hogtrap: 1500, stand: 600, butcher: 500, freezer: 700, canner: 700,
 };
@@ -802,7 +832,7 @@ const PRESET_LEAN: Record<string, number> = {
   land: 75000, winter: 0, rv: 30000, closing: 2500, well: 12000, septic: 7000, power: 6000,
   rvhookup: 1500, starlink: 400, generator: 800, pad: 3000,
   barn: 0, shelter: 4000, safety: 800, propane: 3000, woodheat: 0, tractor: 5000, fence: 0,
-  handpump: 2500, offgrid: 8000, cabin: 6000, food: 2000, garden: 2000, rain: 1500,
+  handpump: 2500, offgrid: 8000, cabin: 6000, food: 2000, garden: 400, coop: 1100, plot: 700, rain: 1500,
   medical: 750, comms: 1000, fuel: 2000,
   rifle: 0, hogtrap: 800, stand: 200, butcher: 300, freezer: 500, canner: 450,
 };
@@ -811,7 +841,7 @@ type AgeRule = "all" | "pre65" | "post65";
 type RecurringItem = { id: string; label: string; rule: AgeRule; collapse: string };
 
 const RECURRING: RecurringItem[] = [
-  { id: "food", label: "Groceries, per person (garden offsets some)", rule: "all", collapse: "Garden, chickens, deer, hogs, stored grain" },
+  { id: "food", label: "Groceries, per person (hunting, eggs and garden offset some)", rule: "all", collapse: "Stored grain, whatever the garden and the flock still produce" },
   { id: "hunt", label: "Hunting: licenses, tags, ammo, feed corn", rule: "all", collapse: "Stockpiled ammo; traps need none" },
   { id: "water", label: "Water: well testing, filters", rule: "all", collapse: "Hand pump, rain catchment, pond + filter" },
   { id: "proptax", label: "Property tax", rule: "all", collapse: "Not collected" },
@@ -830,7 +860,8 @@ const RECURRING: RecurringItem[] = [
   { id: "maint", label: "RV, tractor, equipment repairs", rule: "all", collapse: "Your labor + spare parts on hand" },
   { id: "septic", label: "Septic service", rule: "all", collapse: "Outhouse / composting" },
   { id: "household", label: "Household, clothing, personal, per person", rule: "all", collapse: "Make do, barter" },
-  { id: "garden", label: "Seed, feed, garden supplies", rule: "all", collapse: "Saved seed, forage" },
+  { id: "garden", label: "Garden: seed, soil, canning lids, row cover", rule: "all", collapse: "Saved seed, and eat only what the deer didn't" },
+  { id: "chickens", label: "Chickens: feed, bedding, replacement hens", rule: "all", collapse: "Scraps cover some feed. A raccoon ends the eggs." },
   { id: "trash", label: "Trash (rural transfer station)", rule: "all", collapse: "Burn / compost" },
   { id: "rvreserve", label: "RV replacement reserve", rule: "all", collapse: "Cabin becomes the house" },
 ];
@@ -838,7 +869,7 @@ const RECURRING: RecurringItem[] = [
 const RECURRING_DEFAULTS: Record<string, number> = {
   food: 3600, hunt: 400, water: 300, proptax: 500, propane: 1500, firewood: 0, electric: 1500, gas: 1000, autoins: 1400,
   rvins: 1000, liability: 500, aca: 3000, medicare: 4750, oop: 750, sos: 200, internet: 1900, maint: 2500,
-  septic: 200, household: 1200, garden: 800, trash: 200, rvreserve: 2500,
+  septic: 200, household: 1200, garden: 350, chickens: 350, trash: 200, rvreserve: 2500,
 };
 
 const LIVING_PRESETS: Record<"bare" | "modest" | "comfortable", { label: string; note: string; values: Record<string, number> }> = {
@@ -847,7 +878,7 @@ const LIVING_PRESETS: Record<"bare" | "modest" | "comfortable", { label: string;
     note: "Liability-only truck insurance, a $0-premium Medicare Advantage plan at 65, Starlink's cheapest plan, doing your own repairs, no RV replacement fund",
     values: {
       food: 2400, hunt: 250, water: 100, gas: 600, autoins: 700, rvins: 500, liability: 200, aca: 600, medicare: 2500,
-      oop: 400, sos: 180, internet: 1100, maint: 1000, septic: 100, household: 600, garden: 200, trash: 100, rvreserve: 0,
+      oop: 400, sos: 180, internet: 1100, maint: 1000, septic: 100, household: 600, garden: 200, chickens: 200, trash: 100, rvreserve: 0,
     },
   },
   modest: {
@@ -855,7 +886,7 @@ const LIVING_PRESETS: Record<"bare" | "modest" | "comfortable", { label: string;
     note: "Careful spending with some cushion for repairs and the RV wearing out",
     values: {
       food: 3000, hunt: 300, water: 200, gas: 800, autoins: 1000, rvins: 750, liability: 350, aca: 1800, medicare: 3600,
-      oop: 600, sos: 180, internet: 1500, maint: 1800, septic: 150, household: 900, garden: 500, trash: 150, rvreserve: 1500,
+      oop: 600, sos: 180, internet: 1500, maint: 1800, septic: 150, household: 900, garden: 350, chickens: 350, trash: 150, rvreserve: 1500,
     },
   },
   comfortable: {
@@ -953,12 +984,30 @@ function annualCost(
     sum +=
       item.id === "aca" && unsubsidizedHealth ? p.acaUnsub * adultsOf(p) : recAmount(rec, item.id, p);
   }
-  return (sum - meatOffset(rec, p)) * (1 + p.contingency / 100);
+  return (sum - foodOffset(rec, p).used) * (1 + p.contingency / 100);
 }
 
 function meatOffset(rec: Record<string, number>, p: Params): number {
   if (!p.hunting) return 0;
   return Math.min(huntYield(p).meatLb * p.meatValue, recAmount(rec, "food", p) * 0.5);
+}
+
+function eggPlan(p: Params) {
+  const hens = Math.max(0, Math.round(p.hens ?? 6));
+  const dozens = (hens * EGGS_PER_HEN) / 12;
+  return { hens, dozens, value: dozens * Math.max(0, p.eggDozen ?? 4) };
+}
+
+function gardenGrocery(p: Params) {
+  return Math.max(0, p.gardenSave ?? 700) * (adultsOf(p) === 1 ? 1 : 1.6);
+}
+
+function foodOffset(rec: Record<string, number>, p: Params) {
+  const food = recAmount(rec, "food", p);
+  const meat = meatOffset(rec, p);
+  const eggs = p.chickens ? eggPlan(p).value : 0;
+  const veg = p.garden ? gardenGrocery(p) : 0;
+  return { meat, eggs, veg, used: Math.min(food * 0.65, meat + eggs + veg), cap: food * 0.65 };
 }
 
 type SimResult = {
@@ -1173,6 +1222,14 @@ const TIPS: Record<string, string> = {
   "Include collapse-hardening build":
     "Adds the grid-down items: hand pump, solar, cabin and wood stove, food storage, garden, rain catchment, medical and radios.",
   "Hunt for meat": "Counts hunting gear costs and subtracts the meat you take from the grocery bill.",
+  "Chickens for eggs":
+    "Adds a coop and a fenced run, yearly feed, and the eggs those hens replace at the grocery store. Turn it off if you won't lock them up every night.",
+  Hens: "About 4 to 6 hens per person. More birds means more feed and more to count at dusk. Changing this updates the yearly chicken line.",
+  "Eggs at the store, $/dozen": "What a dozen eggs costs you at the store. Used only to value the eggs your hens replace.",
+  "Vegetable garden":
+    "Adds the fence, drip line and yearly seed, and subtracts the produce that garden replaces. The fence is what keeps deer from eating it.",
+  "Produce the garden replaces, $/yr":
+    "Grocery dollars of vegetables an average year replaces, for one adult. A second adult raises it. A drought, hail or an open gate makes it zero in real life. The plan still leaves most of the grocery bill.",
   "Elk taken per year": "Where elk live, one elk is about four deer's worth of meat.",
   "Deer taken per year": "Each deer is about 45 lb of boneless meat (editable under Estimates).",
   "Hogs taken per year": "Feral hogs, where they exist. Each gives meat plus lard, the fat lean venison lacks.",
@@ -1223,6 +1280,8 @@ const REC_TIPS: Record<string, string> = {
   sos: "Satellite messenger subscription (Garmin inReach or similar) so you can call for help with no cell signal.",
   maint: "Repairs on the RV, tractor, chainsaw, generator and truck.",
   proptax: "County property tax on the land and anything permanent you build.",
+  chickens: "Layer feed, grit, oyster shell, bedding and two replacement hens a year. About $58 per hen. Table scraps lower it. A dead flock does not.",
+  garden: "Seed, compost or fertilizer, drip parts, row cover and canning lids. The fence is in the one-time garden line, not here.",
 };
 
 TIPS.ssCutToggle =
@@ -1263,6 +1322,25 @@ export default function RetreatPlan() {
   const p: Params = { ...DEFAULT_PARAMS, ...storedP };
   const up: Record<string, number> = { ...PRESET_PLANNED, ...storedUp };
   const rec: Record<string, number> = { ...RECURRING_DEFAULTS, ...storedRec };
+  useEffect(() => {
+    if (storedUp.coop !== undefined && storedRec.chickens !== undefined) return;
+    if (storedUp.coop === undefined) {
+      const g = storedUp.garden;
+      setUp((prev) =>
+        g === 4000
+          ? { ...prev, garden: 800, coop: 2200, plot: 1600 }
+          : g === 2000
+            ? { ...prev, garden: 400, coop: 1100, plot: 700 }
+            : { ...prev, coop: prev.coop ?? 2200, plot: prev.plot ?? 1600 },
+      );
+    }
+    if (storedRec.chickens === undefined) {
+      const g = storedRec.garden ?? 0;
+      if (g >= 500) {
+        setRec((prev) => ({ ...prev, garden: Math.round(g * 0.45), chickens: Math.round(g * 0.55) }));
+      }
+    }
+  }, []);
   const [storedEst, setStoredEst] = useCanvasState<Partial<Estimates>>("estimates-v1", {});
   EST = mergeEst(storedEst);
   const est = EST;
@@ -1332,6 +1410,31 @@ export default function RetreatPlan() {
     setRec((prev) => ({ ...prev, propane: Math.round(h.propaneGal * EST.propanePrice), firewood: h.firewood }));
   };
   const applyLiving = (id: LivingPreset) => setRec((prev) => ({ ...prev, ...LIVING_PRESETS[id].values }));
+  const setFlock = (hens: number) => {
+    const n = Math.max(0, Math.round(hens));
+    if (n <= 0) {
+      set("chickens", false);
+      return;
+    }
+    setP((prev) => ({ ...prev, chickens: true, hens: n }));
+    setRec((prev) => ({ ...prev, chickens: chickenUpkeep(n) }));
+    setUp((prev) => {
+      if (n >= 10 && (prev.coop ?? 2200) === 2200) return { ...prev, coop: 2800 };
+      if (n < 10 && prev.coop === 2800) return { ...prev, coop: 2200 };
+      return prev;
+    });
+  };
+  const setGardenSize = (size: "off" | "kitchen" | "calorie") => {
+    if (size === "off") {
+      set("garden", false);
+      return;
+    }
+    setP((prev) => ({ ...prev, garden: true, gardenSave: size === "kitchen" ? 700 : 1400 }));
+    setUp((prev) => ({ ...prev, plot: size === "kitchen" ? 1600 : 3200 }));
+    setRec((prev) => ({ ...prev, garden: size === "kitchen" ? 350 : 600 }));
+  };
+  const gardenSize = !p.garden ? "off" : (up.plot ?? 0) >= 2500 ? "calorie" : "kitchen";
+  const flockSize = !p.chickens ? "off" : (p.hens ?? 6) >= 10 ? "large" : "small";
   const recLabel = (item: RecurringItem) => {
     if (item.id === "propane")
       return `Propane (~${hp.propaneGal.toLocaleString("en-US")} gal/yr at $${EST.propanePrice.toFixed(2)}: ${heat === "propane" ? "RV furnace, cooking, hot water" : heat === "both" ? "cooking, hot water, cold-snap backup" : "cooking, hot water, fridge"})`;
@@ -1339,6 +1442,8 @@ export default function RetreatPlan() {
       return loc.ownWood
         ? `Firewood (~${hp.cords} cords/yr cut from your land: saw gas, chains, bar oil)`
         : `Firewood (~${hp.cords} cords/yr bought at ~$${EST.firewoodBuy}/cord)`;
+    if (item.id === "chickens")
+      return `Chickens: feed, bedding, replacement hens (${eggs.hens} hens, about ${money(chickenUpkeep(1))} each)`;
     return item.label;
   };
   const upNote = (u: UpfrontItem) => {
@@ -1350,6 +1455,8 @@ export default function RetreatPlan() {
       return heat === "propane"
         ? `Set "Heat with" to wood to add this. ${loc.woodNote}`
         : `${st.winterShelter > 0 ? "Goes in the insulated shelter" : "A small RV-rated stove, or one in the cabin"}. ${loc.woodNote}`;
+    if (u.food === "chickens" && !p.chickens) return `Turn chickens on to count this. ${u.note}`;
+    if (u.food === "garden" && !p.garden) return `Turn the garden on to count this. ${u.note}`;
     return u.note;
   };
 
@@ -1376,8 +1483,14 @@ export default function RetreatPlan() {
   const coreTotal = groupTotal("core");
   const hardTotal = groupTotal("hardening");
   const huntTotal = groupTotal("hunting");
-  const upfrontTotal = coreTotal + (p.hardening ? hardTotal : 0) + (p.hunting ? huntTotal : 0);
+  const foodSetup = UPFRONT.filter((u) => groupOf(u, p) === "food" && foodCounted(u, p)).reduce(
+    (s, u) => s + upAmount(up, u.id, p),
+    0,
+  );
+  const upfrontTotal = coreTotal + (p.hardening ? hardTotal : 0) + (p.hunting ? huntTotal : 0) + foodSetup;
   const hunt = huntYield(p);
+  const eggs = eggPlan(p);
+  const grown = foodOffset(rec, p);
   const offset = meatOffset(rec, p);
   const land = up.land ?? 0;
   const loan = loanTerms(p, land);
@@ -1437,12 +1550,16 @@ export default function RetreatPlan() {
   const allocOther = coreTotal - land - (up.rv ?? 0);
   const allocHard = p.hardening ? hardTotal : 0;
   const allocHunt = p.hunting ? huntTotal : 0;
+  const allocFood = foodSetup;
   const allocTotal = egg.k401 + savings;
-  const allocRemaining = Math.max(0, allocTotal - allocTaxes - landRv - allocOther - allocHard - allocHunt);
+  const allocRemaining = Math.max(0, allocTotal - allocTaxes - landRv - allocOther - allocHard - allocHunt - allocFood);
 
-  const shownRecurring = RECURRING.filter(
-    (i) => (i.id !== "firewood" || heat !== "propane" || (rec.firewood ?? 0) > 0) && (i.id !== "hunt" || p.hunting),
-  );
+  const showRec = (id: string) =>
+    (id !== "firewood" || heat !== "propane" || (rec.firewood ?? 0) > 0) &&
+    (id !== "hunt" || p.hunting) &&
+    (id !== "chickens" || p.chickens) &&
+    (id !== "garden" || p.garden);
+  const shownRecurring = RECURRING.filter((i) => showRec(i.id));
   const costRows = shownRecurring.map((item) => [
     REC_TIPS[item.id] ? (
       <span key={`${item.id}-l`} className="tip" title={REC_TIPS[item.id]}>
@@ -1467,7 +1584,7 @@ export default function RetreatPlan() {
     PER_PERSON_RECURRING.has(item.id) && adults > 1 ? money(recAmount(rec, item.id, p)) : "",
   ]);
 
-  const chartItems = RECURRING.filter((i) => i.rule !== "post65" && (i.id !== "hunt" || p.hunting))
+  const chartItems = RECURRING.filter((i) => i.rule !== "post65" && showRec(i.id))
     .map((i) => ({ label: i.label.split(" (")[0], value: recAmount(rec, i.id, p) }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 8);
@@ -1749,6 +1866,22 @@ export default function RetreatPlan() {
                 <NumField value={p.meatValue} onChange={(n) => set("meatValue", n)} width={64} />
               </Field>
               <Divider />
+              <Field label="Chickens for eggs">
+                <Toggle checked={p.chickens} onChange={(v) => set("chickens", v)} />
+              </Field>
+              <Field label="Hens">
+                <NumField value={p.hens ?? 6} onChange={setFlock} width={64} />
+              </Field>
+              <Field label="Eggs at the store, $/dozen">
+                <NumField value={p.eggDozen ?? 4} onChange={(n) => set("eggDozen", n)} width={64} />
+              </Field>
+              <Field label="Vegetable garden">
+                <Toggle checked={p.garden} onChange={(v) => set("garden", v)} />
+              </Field>
+              <Field label="Produce the garden replaces, $/yr">
+                <NumField value={p.gardenSave ?? 700} onChange={(n) => set("gardenSave", n)} />
+              </Field>
+              <Divider />
               <Row gap={8}>
                 <Pill onClick={() => applyPreset(PRESET_PLANNED)}>Planned build</Pill>
                 <Pill onClick={() => applyPreset(PRESET_LEAN)}>Lean build</Pill>
@@ -1969,6 +2102,7 @@ export default function RetreatPlan() {
             { id: "core", value: allocOther, color: "cyan" },
             { id: "hard", value: allocHard, color: "purple" },
             { id: "hunt", value: allocHunt, color: "orange" },
+            { id: "food", value: allocFood, color: "yellow" },
             { id: "left", value: allocRemaining, color: "green" },
           ]}
         />
@@ -1980,6 +2114,7 @@ export default function RetreatPlan() {
               ["cyan", `Making it livable: ${money(allocOther)}`],
               ["purple", `Collapse hardening: ${money(allocHard)}`],
               ["orange", `Hunting + processing gear: ${money(allocHunt)}`],
+              ["yellow", `Chickens and garden: ${money(allocFood)}`],
               ["green", `Left to live on: ${money(allocRemaining)}`],
             ] as Array<[Color, string]>
           ).map(([c, l]) => (
@@ -2396,6 +2531,162 @@ export default function RetreatPlan() {
       </Stack>
 
       <Stack gap={12}>
+        <H2>Chickens and a garden</H2>
+        <Text tone="secondary">
+          Eggs and vegetables you raise yourself. Neither one pays back its cost in cash. A dozen eggs from six hens
+          is worth about what the feed cost, and the coop is money you do not get back. The reason to do it is food
+          you still have when the store is an hour away, or empty. Turn a switch off if you will not do the chores.
+          An unlocked coop or an open garden gate loses the food, and the plan still counts the setup.
+        </Text>
+        <Row gap={8} wrap>
+          <Text size="small" tone="tertiary">Chickens</Text>
+          <Pill size="sm" active={flockSize === "off"} onClick={() => setFlock(0)}>
+            None
+          </Pill>
+          <Pill size="sm" active={flockSize === "small"} onClick={() => setFlock(6)}>
+            6 hens
+          </Pill>
+          <Pill size="sm" active={flockSize === "large"} onClick={() => setFlock(12)}>
+            12 hens
+          </Pill>
+          <Text size="small" tone="tertiary" style={{ marginLeft: 12 }}>Garden</Text>
+          <Pill size="sm" active={gardenSize === "off"} onClick={() => setGardenSize("off")}>
+            None
+          </Pill>
+          <Pill size="sm" active={gardenSize === "kitchen"} onClick={() => setGardenSize("kitchen")}>
+            Kitchen garden
+          </Pill>
+          <Pill size="sm" active={gardenSize === "calorie"} onClick={() => setGardenSize("calorie")}>
+            Quarter-acre calorie patch
+          </Pill>
+        </Row>
+        <Grid columns={4} gap={12}>
+          <Stat value={money(foodSetup)} label="Setup counted now (coop and fence)" />
+          <Stat
+            value={money((p.chickens ? rec.chickens ?? 0 : 0) + (p.garden ? rec.garden ?? 0 : 0))}
+            label="Feed and seed per year"
+          />
+          <Stat value={money(grown.eggs + grown.veg)} label="Grocery dollars replaced in an average year" tone="success" />
+          <Stat
+            value={money(Math.max(0, (p.chickens ? rec.chickens ?? 0 : 0) + (p.garden ? rec.garden ?? 0 : 0) - grown.eggs - grown.veg))}
+            label="Yearly cost still left after that food"
+          />
+        </Grid>
+        <Text size="small" tone="tertiary">
+          {p.chickens
+            ? `${eggs.hens} hens at about ${EGGS_PER_HEN} eggs each, ${Math.round(eggs.dozens)} dozen, valued at ${money(p.eggDozen ?? 4)} a dozen (${money(grown.eggs)}). Winter and the hottest months lay less, so this is a year average, not June.`
+            : "Chickens are off, so no coop and no egg savings."}{" "}
+          {p.garden
+            ? `The garden replaces ${money(grown.veg)} of produce${adults > 1 ? " for this household" : ""}. `
+            : "The garden is off, so no fence and no produce savings. "}
+          Hunting, eggs and the garden together are subtracted only up to {money(grown.cap)} (65% of groceries). The
+          plan uses {money(grown.used)} of that. Coffee, oil, flour, salt and a failed crop stay on the grocery line.
+        </Text>
+        {(up.garden ?? 0) >= 2500 && (
+          <Callout tone="warning" title="The canning line may still include the coop and the fence">
+            Collapse hardening still has {money(up.garden ?? 0)} on "Canning and dry storage". That line used to be the
+            whole chickens-and-garden bundle. The coop and the fence are counted separately now. Set the canning line
+            to about $800 unless you really mean to spend this much on jars and a canner.
+            <Row gap={8}>
+              <Pill size="sm" onClick={() => setUp((prev) => ({ ...prev, garden: 800 }))}>
+                Set canning to $800
+              </Pill>
+            </Row>
+          </Callout>
+        )}
+        {upfrontTable("food")}
+
+        <Grid columns={2} gap={20} align="start">
+          <Stack gap={10}>
+            <H3>Keeping the hens alive</H3>
+            <Text size="small" tone="secondary">
+              You do not need a rooster for eggs. A rooster is only for hatching your own replacements, and he will
+              spur you. For one person, buy two started pullets a year (about $25–35 each) and skip the rooster.
+              Hens lay well for about two years, then slow down. Plan to replace them. Do not eat a bird that was
+              sick.
+            </Text>
+            <Callout tone={st.winterShelter > 0 ? "warning" : "info"} title={st.winterShelter > 0 ? `Winter in ${st.name}` : `Summer in ${st.name}`}>
+              {st.winterShelter > 0
+                ? `Winters reach ${st.winterLow}. Adult hens handle that if the coop is dry, the vent is above them, and the roost is wide enough that feathers cover their toes. They do not handle a heat lamp. That is how coops burn. Frozen water is the daily chore: swap two waterers, or use a heated base on the household circuit (about $40). Short days cut laying from November to February. A small LED on a timer, about 14 hours, brings some of those eggs back.`
+                : `Heat kills more hens here than a normal winter night (${st.winterLow}). Shade the west side of the coop, keep two waterers filled through the afternoon, and expect laying to drop in the hottest weeks. A frozen week still happens. Swap the water. Still no heat lamp.`}
+            </Callout>
+            <Table
+              headers={["What kills them", "How", "What actually stops it"]}
+              rows={[
+                ["Raccoon", "Kills several in one night. Opens a hook-and-eye and reaches through chicken wire.", "1/2-inch hardware cloth on every hole. A latch it can't flip (carabiner or spring clip). Lock the coop at dusk."],
+                ["Dog, coyote, fox", "Digs under, or carries a bird off in daylight.", "A hardware-cloth apron about 18 inches out, pinned down, or buried a foot. Don't leave them loose while you're inside."],
+                ["Hawk and owl", "Takes the bird in the open.", "Overhead wire on the run. Free-range only while you are standing out there."],
+                ["Snake", "Eats the eggs.", "1/2-inch mesh, and collect eggs every day so nothing learns the nest box."],
+                ["Heat lamp", "Burns the coop. Cold rarely kills an adult hen.", "No lamp. Dry litter, wide roost, vent above the birds. Heated water base only."],
+                ["You leave", "One unlocked night is enough.", "Count them in at dusk. An automatic door is a backup you test every week. A door that fails open is an invitation. Ask a neighbor to close it if you're gone overnight."],
+              ]}
+            />
+            <Text size="small" tone="secondary">
+              Buy birds from a local breeder or a feed store. Don't let them drink where wild ducks do. That is how
+              avian flu moves, and a government order can wipe the flock. Mites show up as pale birds and dirty vent
+              feathers. A dust bath of dry dirt and wood ash prevents most of it. A bird that sits fluffed and won't
+              eat comes out of the coop the same day.
+            </Text>
+          </Stack>
+          <Stack gap={10}>
+            <H3>Keeping the garden from being eaten</H3>
+            <Text size="small" tone="secondary">
+              {gardenSize === "calorie"
+                ? `A quarter acre is the size that starts to matter for calories: potatoes, sweet potatoes, dry beans, winter squash and corn. It is a part-time job from planting to frost, and the fence and the drip line are about ${money(up.plot ?? 0)}.`
+                : `The kitchen garden is about 40 by 60 feet. It replaces vegetables, not the grocery bill. Calories come from potatoes, sweet potatoes, dry beans and winter squash, not from salad. A quarter-acre calorie patch needs about twice the fence and a lot more water and work. Use that pill if that is the garden you mean.`}{" "}
+              {st.growing} growing season, {st.rain} of rain.
+            </Text>
+            <Callout tone="info" title={`${st.name} growing conditions`}>
+              {st.winterShelter > 0
+                ? `Start plants inside the RV. Rain here is not enough, so drip from the well is not optional, and mulch so you are not watering at noon. Hail can strip every leaf in one storm. A low hoop with hail cloth is worth more than another seed packet. Gophers take roots from below. Put hardware cloth under raised beds.`
+                : `Plant a spring garden and a fall garden. The hot middle is okra, sweet potatoes, cowpeas and peppers, with mulch and drip. Tomatoes stall in the worst heat. Greens belong in the cool ends of the season.`}
+              {st.hogs > 0
+                ? " Feral hogs will root a garden flat in a night. Run a hog panel or an electric wire at snout height outside the deer fence. The same panels as a hog trap."
+                : ""}
+              {st.elk > 0 ? " Elk and deer both clear a chest-high fence. Eight feet, and a gate you close." : ""}
+            </Callout>
+            <Table
+              headers={["What eats it", "What it does", "What actually stops it"]}
+              rows={[
+                ["Deer", "A few deer eat a season of food in a week, including while you are in town.", "An 8-ft fence or deer net on tall posts, and a gate you close. A chest-high fence does not work."],
+                ["Rabbits", "Cut seedlings off at the ground.", "Hardware cloth along the bottom 2 feet, pinned or buried a few inches."],
+                ["Raccoons", "Take corn, melons and tomatoes the night they ripen.", "Pick every day. One electric strand on the outside of the fence."],
+                ["Birds", "Pull seedlings and peck fruit.", "Row cover until the plants are past the tender stage."],
+                ...(st.hogs > 0
+                  ? [["Feral hogs", "Root the beds and smash light wire.", "Hog panel or electric wire at snout height, outside the deer fence."] as [string, string, string]]
+                  : []),
+                ...(st.winterShelter > 0
+                  ? ([
+                      ["Gophers and voles", "Eat roots from underneath.", "Hardware cloth under the beds, and traps."],
+                      ["Hail and frost", `The season is only ${st.growing}. One storm can end it.`, "Start plants indoors. A low hoop with hail cloth."],
+                      ["Drought", `${st.rain} of rain will not carry a summer garden.`, "Drip from the well, and mulch. Don't count on a pond."],
+                    ] as Array<[string, string, string]>)
+                  : ([["Heat and bugs", "July heat stalls tomatoes. Squash bugs and hornworms take the rest.", "Mulch, drip, and row cover on squash until they flower. Plant a fall crop."]] as Array<[string, string, string]>)),
+              ]}
+            />
+          </Stack>
+        </Grid>
+
+        <H3>The chores, or the food disappears</H3>
+        <Table
+          headers={["When", "Chickens", "Garden"]}
+          rows={[
+            ["Every morning", "Open the coop, or check the automatic door. Water. Count the birds.", "In season, look at the gate and whether the drip is actually running."],
+            ["Every dusk", "Lock the coop and count again. This is the job that keeps them alive.", "Close the gate. Deer work at night."],
+            ["Once a week", "Add litter or scrape the droppings board. Walk the apron for new dig holes.", "Weed, harvest what is ripe, and walk the fence for a sag or a hole."],
+            ["Spring and fall", "Full clean twice a year. Replace the two oldest hens. Check for mites.", "Spring: fix the fence before anything greens up, when deer are hungriest. Fall: can or store the crop, then mulch the beds."],
+          ]}
+        />
+        <Callout tone="warning" title="Living alone is the real risk">
+          The flock and the garden fail when you are not there. One night the coop stays open, or one week the garden
+          gate stays open, and the food is gone. You still paid for the coop and the fence. If you travel, hunt all
+          day, or land in the hospital, someone else has to lock the birds and close the gate. Past 70 the daily chore
+          is what quits first. If you already know you will not do dusk lock-up every day, turn the chickens off and
+          keep the grocery line. The plan would rather you buy eggs than pretend a dead flock is still laying.
+        </Callout>
+      </Stack>
+
+      <Stack gap={12}>
         <H2>Hunting in {st.name}: {st.game.toLowerCase()}</H2>
         <Text tone="secondary">{loc.huntIntro}</Text>
         {(st.hogs === 0 || st.elk > 0) && (
@@ -2418,10 +2709,11 @@ export default function RetreatPlan() {
         <Text size="small" tone="tertiary">
           Yields assume about {EST.deerLb} lb boneless meat per deer and, for a 150 lb hog, about {EST.hogLb} lb
           of meat plus {EST.lardLb} lb of lard. Venison is ~{KCAL_VENISON_LB} kcal/lb, hog meat ~{KCAL_HOG_LB}, lard
-          ~{KCAL_LARD_LB}. Savings are counted at your store-meat price, capped at half the grocery budget, and are
-          already subtracted in the runway chart. Meat covers your protein needs, not your calories. Meat this lean
-          can't be most of your diet anyway, so the garden and stored grain still have to supply most of the
-          calories. Each hunter has their own deer limit, so more adults can legally take more deer.
+          ~{KCAL_LARD_LB}. Meat savings are counted at your store-meat price and capped at half the grocery budget.
+          Eggs and garden savings sit on top of that, and all of it together stops at 65% of groceries, so the plan
+          never assumes the store bill goes to zero. Meat covers protein, not calories. Meat this lean
+          can't be most of your diet anyway, so potatoes, beans, squash and stored grain still have to supply most of
+          the calories. Each hunter has their own deer limit, so more adults can legally take more deer.
         </Text>
 
         <Grid columns={2} gap={20} align="start">
