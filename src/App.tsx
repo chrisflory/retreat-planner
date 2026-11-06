@@ -37,6 +37,7 @@ type Params = {
   adults: number;
   k401: number;
   savings: number;
+  ageNow?: number;
   retireAge: number;
   goalAge: number;
   status: Status;
@@ -645,7 +646,8 @@ const DEFAULT_PARAMS: Params = {
   adults: 1,
   k401: 375000,
   savings: 0,
-  retireAge: 58,
+  ageNow: 58,
+  retireAge: 59,
   goalAge: 85,
   status: "single",
   strategy: "lump",
@@ -910,13 +912,60 @@ const FED: Record<Status, { std: number; brackets: Array<[number, number]> }> = 
   },
 };
 
-const startAge = (p: { retireAge?: number }) => Math.min(75, Math.max(40, Math.round(p.retireAge ?? 58)));
+const MIN_PLAN_AGE = 40;
+const MAX_PLAN_AGE = 75;
+const clampPlanAge = (n: number) =>
+  Math.min(MAX_PLAN_AGE, Math.max(MIN_PLAN_AGE, Math.round(Number.isFinite(n) ? n : MIN_PLAN_AGE)));
+const startAge = (p: { retireAge?: number }) => clampPlanAge(p.retireAge ?? 58);
+
+function ageNowFrom(p: { ageNow?: number; retireAge?: number; startYear?: number }) {
+  if (p.ageNow != null && Number.isFinite(p.ageNow)) return clampPlanAge(p.ageNow);
+  return clampPlanAge((p.retireAge ?? 58) - yearsToRetire(p));
+}
+
+const DEFERRAL_BASE = 23500;
+const DEFERRAL_CATCHUP = 31000;
+
+function deferralNote(p: Params, contrib: number) {
+  const years = yearsToRetire(p);
+  if (years <= 0 || contrib <= DEFERRAL_BASE) return "";
+  const now = ageNowFrom(p);
+  const lastAge = now + years - 1;
+  if (now >= 50) {
+    return contrib > DEFERRAL_CATCHUP
+      ? `The 2026 employee deferral limit at age ${now} is $31,000. Employer match can sit on top of that.`
+      : "";
+  }
+  if (lastAge >= 50) {
+    const yearTurns50 = THIS_YEAR + (50 - now);
+    return contrib > DEFERRAL_CATCHUP
+      ? `The 2026 employee deferral limit is $23,500 until age 50, then $31,000. This contribution is above both. Employer match can sit on top of that.`
+      : `The 2026 employee deferral limit is $23,500 until you turn 50 in ${yearTurns50}, then $31,000. Employer match can sit on top of that.`;
+  }
+  return `The 2026 employee deferral limit at age ${now} is $23,500. It becomes $31,000 at age 50. Employer match can sit on top of that.`;
+}
 const rule55Applies = (p: Params) => p.rule55 && startAge(p) >= 55;
 const END_AGE = 95;
 const THIS_YEAR = new Date().getFullYear();
 
 function yearsToRetire(p: { startYear?: number }) {
   return Math.max(0, Math.round(p.startYear ?? THIS_YEAR) - THIS_YEAR);
+}
+
+function linkAges(prev: Partial<Params>, which: "now" | "retire" | "year", n: number): Params {
+  const now0 = ageNowFrom(prev);
+  const base: Params = { ...DEFAULT_PARAMS, ...prev, ageNow: now0 };
+  if (which === "now") {
+    const now = clampPlanAge(n);
+    const retire = Math.min(MAX_PLAN_AGE, now + yearsToRetire(base));
+    return { ...base, ageNow: now, retireAge: retire, startYear: THIS_YEAR + (retire - now) };
+  }
+  if (which === "year") {
+    const year = Math.min(THIS_YEAR + (MAX_PLAN_AGE - now0), Math.max(THIS_YEAR, Math.round(n)));
+    return { ...base, ageNow: now0, startYear: year, retireAge: now0 + (year - THIS_YEAR) };
+  }
+  const retire = Math.min(MAX_PLAN_AGE, Math.max(now0, Math.round(n)));
+  return { ...base, ageNow: now0, retireAge: retire, startYear: THIS_YEAR + (retire - now0) };
 }
 
 function nestEgg(p: Params) {
@@ -1170,11 +1219,13 @@ const TIPS: Record<string, string> = {
     "Size of the property. Land cost is acres × the state's price per acre (edit that under Estimates), or the listing price if you used one from Land search.",
   "Adults in household":
     "People living there. Groceries, health insurance, Medicare, out-of-pocket medical and household costs are per person. Two or more adults switches filing status to married, joint.",
+  "Age you are now":
+    "Your age this year. Retirement age stays this many years ahead of the retirement year, and the 401(k) catch-up limit uses it.",
   "Retirement age":
-    "The age you leave your job and the plan starts. The Rule of 55 needs you to be 55 or older that year. Medicare still starts at 65, and Social Security no earlier than 62.",
+    "The age you leave your job and the plan starts. Changing it moves the retirement year. The Rule of 55 needs you to be 55 or older that year. Medicare still starts at 65, and Social Security no earlier than 62.",
   "Money needs to last through age":
     "The age you still want money left. The plan then shows the monthly spending cut, or the extra yearly income, that gets you there with everything else unchanged.",
-  "Year you retire": "The calendar year the plan starts. Pay and contributions count for each year before this one, and it times the Social Security cut scenario.",
+  "Year you retire": "The calendar year the plan starts. Changing it moves retirement age. Pay and contributions count for each year before this one, and it times the Social Security cut scenario.",
   "Wages until you retire, $/yr":
     "Gross pay from the job you still have, for each year before the retirement year. The part you don't contribute or save is your cost of living now and is not spent by the plan.",
   "401(k) contribution, $/yr":
@@ -1319,7 +1370,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const [storedP, setP] = useCanvasState<Params>("params-v2", DEFAULT_PARAMS);
   const [storedUp, setUp] = useCanvasState<Record<string, number>>("upfront-v2", PRESET_PLANNED);
   const [storedRec, setRec] = useCanvasState<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
-  const p: Params = { ...DEFAULT_PARAMS, ...storedP };
+  const ageNow = ageNowFrom(storedP);
+  const p: Params = { ...DEFAULT_PARAMS, ...storedP, ageNow };
   const up: Record<string, number> = { ...PRESET_PLANNED, ...storedUp };
   const rec: Record<string, number> = { ...RECURRING_DEFAULTS, ...storedRec };
   useEffect(() => {
@@ -1379,6 +1431,9 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   };
 
   const set = <K extends keyof Params>(k: K, v: Params[K]) => setP((prev) => ({ ...prev, [k]: v }));
+  const setAgeNow = (n: number) => setP((prev) => linkAges(prev, "now", n));
+  const setRetireAge = (n: number) => setP((prev) => linkAges(prev, "retire", n));
+  const setStartYear = (n: number) => setP((prev) => linkAges(prev, "year", n));
   const st = STATES[stateOf(p)];
   const pickState = (id: StateId) => {
     const [np, nu, nr] = applyState(id, p, up, rec);
@@ -1615,7 +1670,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       <Stack gap={6}>
         <H1>{st.name} land retreat: retirement cash plan</H1>
         <Text tone="secondary">
-          Household of {who}, retiring at {startAge(p)} in {p.startYear}, living in an RV on {EST.acres} acres with a water source in {st.region}. Costs
+          Household of {who}, age {ageNowFrom(p)}, retiring at {startAge(p)} in {p.startYear}, living in an RV on {EST.acres} acres with a water source in {st.region}. Costs
           marked "per person" scale with the household size in Assumptions. Every number with a box is editable, and
           the charts recompute as you type. Taxes use 2026 federal brackets plus {st.name} state tax (
           {st.taxNote})
@@ -1685,9 +1740,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           {(p.jobPay ?? 0) > 0 && egg.contrib + egg.save > (p.jobPay ?? 0)
             ? `Contributions plus savings add up to more than the ${money(p.jobPay)} wage.`
             : "The rest of the paycheck is your cost of living now and is not in the plan."}{" "}
-          {egg.contrib > ((startAge(p) - egg.years) >= 50 ? 31000 : 23500)
-            ? `The 2026 employee deferral limit is $${(startAge(p) - egg.years) >= 50 ? "31,000" : "23,500"}. Employer match can sit on top of that.`
-            : ""}
+          {egg.contrib > 0 ? deferralNote(p, egg.contrib) : ""}
         </Callout>
       )}
 
@@ -1729,15 +1782,30 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                   width={64}
                 />
               </Field>
+              <Field label="Age you are now">
+                <NumField value={ageNowFrom(p)} onChange={setAgeNow} width={64} />
+              </Field>
               <Field label="Retirement age">
-                <NumField value={p.retireAge ?? 58} onChange={(n) => set("retireAge", n)} width={64} />
+                <NumField value={p.retireAge ?? 58} onChange={setRetireAge} width={64} />
               </Field>
               <Field label="Money needs to last through age">
                 <NumField value={p.goalAge ?? 85} onChange={(n) => set("goalAge", n)} width={64} />
               </Field>
               <Field label="Year you retire">
-                <NumField value={p.startYear} onChange={(n) => set("startYear", n)} width={72} />
+                <NumField value={p.startYear} onChange={setStartYear} width={72} />
               </Field>
+              <Text size="small" tone="tertiary">
+                {yearsToRetire(p) === 0
+                  ? `Retiring this year, at ${startAge(p)}.`
+                  : `Retiring in ${p.startYear} is ${yearsToRetire(p)} ${yearsToRetire(p) === 1 ? "year" : "years"} from now, at age ${startAge(p)}.`}{" "}
+                The cash chart starts then. Lasting through age {goal} is {goal - startAge(p)} years of retirement.
+                {p.ssAge < startAge(p)
+                  ? ` Social Security is set to age ${p.ssAge}, so the plan counts it from the year you retire.`
+                  : ""}
+                {p.collapseAge < startAge(p)
+                  ? ` Collapse is set at ${p.collapseAge}, before retirement, so the chart treats cash as frozen from the first year.`
+                  : ""}
+              </Text>
               <Field label="Wages until you retire, $/yr">
                 <NumField value={p.jobPay ?? 0} onChange={(n) => set("jobPay", n)} />
               </Field>
