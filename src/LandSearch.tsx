@@ -295,7 +295,7 @@ export default function LandSearch({
   ]);
 
   return (
-    <Stack gap={24} style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
+    <Stack gap={20}>
       <Stack gap={6}>
         <H1>Land search</H1>
         <Text tone="secondary">

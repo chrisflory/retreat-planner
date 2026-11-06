@@ -406,6 +406,7 @@ export function LineChart({
   valuePrefix = "",
   height = 260,
   yFloor,
+  fluid,
 }: {
   categories?: string[];
   series?: Series[];
@@ -413,15 +414,18 @@ export function LineChart({
   height?: number;
   /** Lowest dollar the axis will show. A deeper shortfall runs off the bottom. */
   yFloor?: number;
+  /** Grow the plot with the window instead of using a fixed height. */
+  fluid?: boolean;
 }) {
   const fmt = compact(valuePrefix);
   const values = series.flatMap((s) => s.data).filter((n) => Number.isFinite(n));
   const lowest = values.length ? Math.min(...values) : 0;
   const highest = values.length ? Math.max(...values) : 0;
   const yMin = yFloor === undefined ? undefined : Math.max(Math.min(lowest, 0), yFloor);
-  const yMax = yMin === undefined ? undefined : Math.max(highest, 0) + Math.max(highest - yMin, 1) * 0.05;
+  const span = Math.max(highest - (yMin ?? 0), 1);
+  const yMax = yMin === undefined ? undefined : Math.max(highest, 0) + span * 0.03;
   return (
-    <div style={{ width: "100%", height }}>
+    <div className={fluid ? "chart-plot" : undefined} style={{ width: "100%", height: fluid ? undefined : height }}>
       <ResponsiveContainer>
         <RLineChart data={toRows(categories, series)} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
           <CartesianGrid stroke="var(--stroke)" vertical={false} />

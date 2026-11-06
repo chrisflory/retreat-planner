@@ -1664,7 +1664,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   );
 
   return (
-    <Stack gap={24} style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
+    <Stack gap={20}>
       {part !== "sustain" && (
       <>
       <Stack gap={6}>
@@ -1754,11 +1754,11 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         <Stat value={`${money(steadyPre65 / 12)}/mo`} label={`Living cost before 65 (${money(steadyPre65)}/yr), today's dollars`} />
       </Grid>
 
-      <Grid columns="minmax(0, 320px) minmax(0, 1fr)" gap={20} align="start">
+      <div className="plan-main">
         <Card>
           <CardHeader>Assumptions</CardHeader>
           <CardBody>
-            <Stack gap={10}>
+            <div className="fields">
               <Field label="State">
                 <Select
                   value={stateOf(p)}
@@ -1794,6 +1794,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Field label="Year you retire">
                 <NumField value={p.startYear} onChange={setStartYear} width={72} />
               </Field>
+              <div className="span-2">
               <Text size="small" tone="tertiary">
                 {yearsToRetire(p) === 0
                   ? `Retiring this year, at ${startAge(p)}.`
@@ -1806,6 +1807,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                   ? ` Collapse is set at ${p.collapseAge}, before retirement, so the chart treats cash as frozen from the first year.`
                   : ""}
               </Text>
+              </div>
               <Field label="Wages until you retire, $/yr">
                 <NumField value={p.jobPay ?? 0} onChange={(n) => set("jobPay", n)} />
               </Field>
@@ -1849,10 +1851,12 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                 <Toggle checked={p.rule55} onChange={(v) => set("rule55", v)} />
               </Field>
               {p.rule55 && !rule55Applies(p) && (
+                <div className="span-2">
                 <Text size="small" tone="tertiary">
                   The Rule of 55 needs you to leave the job in or after the year you turn 55, so it's off at{" "}
                   {startAge(p)}. Withdrawals before 59½ pay the 10% penalty.
                 </Text>
+                </div>
               )}
               <Field label="Seller-finance the land">
                 <Toggle checked={p.finance} onChange={(v) => set("finance", v)} />
@@ -1952,6 +1956,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                 <NumField value={p.gardenSave ?? 700} onChange={(n) => set("gardenSave", n)} />
               </Field>
               <Divider />
+              <div className="span-2">
               <Row gap={8}>
                 <Pill onClick={() => applyPreset(PRESET_PLANNED)}>Planned build</Pill>
                 <Pill onClick={() => applyPreset(PRESET_LEAN)}>Lean build</Pill>
@@ -1965,7 +1970,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                   Reset
                 </Pill>
               </Row>
-            </Stack>
+              </div>
+            </div>
           </CardBody>
         </Card>
 
@@ -1982,7 +1988,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               { name: `Collapse at ${p.collapseAge} (cash frozen, useless)`, data: collapse.balances.map(Math.round), tone: "neutral" },
             ]}
             valuePrefix="$"
-            height={300}
+            fluid
             yFloor={-100_000}
           />
           <Text size="small" tone="tertiary">
@@ -2018,7 +2024,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             gains rates at this income. Both are treated as tax-free here.
           </Callout>
         </Stack>
-      </Grid>
+      </div>
 
       <Stack gap={12}>
         <H2>Two what-ifs: a Social Security cut and seller financing</H2>

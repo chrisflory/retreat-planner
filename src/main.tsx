@@ -18,8 +18,8 @@ function Root() {
   const [tab, setTab] = useCanvasState<Tab>("tab", "plan");
   const [theme, setTheme] = useTheme();
   return (
-    <>
-      <Row gap={8} wrap style={{ padding: "16px 24px 0", maxWidth: 1400, margin: "0 auto" }}>
+    <div className="page">
+      <Row gap={8} wrap style={{ marginBottom: 12 }}>
         <Pill active={tab === "plan"} onClick={() => setTab("plan")}>
           Retirement plan
         </Pill>
@@ -49,7 +49,7 @@ function Root() {
       ) : (
         <App part={tab === "sustain" ? "sustain" : "plan"} />
       )}
-    </>
+    </div>
   );
 }
 
