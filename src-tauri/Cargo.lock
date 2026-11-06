@@ -3084,7 +3084,7 @@ dependencies = [
 
 [[package]]
 name = "retreat-planner"
-version = "1.9.13"
+version = "1.9.14"
 dependencies = [
  "tauri",
  "tauri-build",

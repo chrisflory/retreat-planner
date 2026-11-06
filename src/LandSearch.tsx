@@ -116,28 +116,22 @@ export type Listing = {
 };
 
 const slug = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-const title = (s: string) => s.trim().split(/\s+/).map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join("-");
 const money = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
 
 function searchLinks(c: Criteria, county: string | null) {
   const st = STATES[c.state];
   const code = STATE_META[c.state].code;
   const t = PROP_TYPES[c.type];
-  const place = county ? `${slug(county)}-county-${slug(st.name)}` : slug(st.name);
-  const lcPlace = county ? `${title(county)}-County-${code}` : st.name.replace(/\s+/g, "-");
   const lo = Math.max(0, Math.round(c.acresMin));
   const hi = Math.max(0, Math.round(c.acresMax));
   const lwAcres =
     lo > 0 && hi > lo ? `/acres-${lo}-${hi}` : lo > 0 ? `/acres-over-${lo}` : hi > 0 ? `/acres-under-${hi}` : "";
   const lwPrice = c.priceMax > 0 ? `/price-under-${Math.round(c.priceMax)}` : "";
+  const countySeg = county ? `/${slug(county)}-county` : "";
   const where = county ? `"${county} County" ${code}` : st.name;
   const google = `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
   return [
-    { site: "LandWatch", url: `https://www.landwatch.com/${place}-${t.lw}-for-sale${lwAcres}${lwPrice}` },
-    // Acre and price path segments (25-50-acres/under-75000) are refused by Akamai
-    // in every browser, including Chrome. The county listing page is the one the site serves.
-    { site: "Land.com", url: `https://www.land.com/${lcPlace}/${t.lc}/` },
-    { site: "Lands of America", url: `https://www.landsofamerica.com/${lcPlace}/${t.lc}/` },
+    { site: "LandWatch", url: `https://www.landwatch.com/${slug(st.name)}-${t.lw}-for-sale${countySeg}${lwPrice}${lwAcres}` },
     { site: "Zillow (land)", url: county ? `https://www.zillow.com/${slug(county)}-county-${code.toLowerCase()}/land/` : `https://www.zillow.com/${code.toLowerCase()}/land/` },
     { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
   ];
@@ -574,11 +568,11 @@ export default function LandSearch({
         <Stack gap={12}>
           <H2>1. Search the listing sites</H2>
           <Text tone="secondary">
-            LandWatch opens in your usual browser, already filtered to the county, property type, {c.acresMin}–
+            LandWatch opens in your usual browser on the county, property type, {c.acresMin}–
             {c.acresMax} acres{c.priceMax > 0 ? `, and under ${money(c.priceMax)}` : ""}. Land.com and Lands of America
-            refuse that kind of filtered address with Access Denied, in Chrome as well as Brave, so those two open the
-            county listings in Chrome and you set the acres and price on the site. Zillow opens in Chrome and needs
-            its own acres and price filters. Save the search on the site to get new listings by email.
+            answer this computer with Access Denied on every page, including a single listing, in Chrome as well as
+            Brave. Those buttons are gone. Zillow opens in Chrome and needs its own acres and price filters. Save the
+            search on the site to get new listings by email.
           </Text>
           <Table headers={["Where", "Open search"]} rows={linkRows} />
           <Callout tone="neutral" title="Why the app doesn't scrape the sites">
