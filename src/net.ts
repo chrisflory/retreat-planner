@@ -12,7 +12,24 @@ export async function getJSON<T = unknown>(url: string, timeoutMs = 45000): Prom
   return (await res.json()) as T;
 }
 
+const CLEAR_BROWSER = /(^|\.)land\.com$|(^|\.)landsofamerica\.com$|(^|\.)zillow\.com$/i;
+
 export async function openExternal(url: string) {
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    host = "";
+  }
+  if (isTauri && CLEAR_BROWSER.test(host)) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("open_in_clear_browser", { url });
+      return;
+    } catch {
+      // Chrome and Firefox were not available. The default browser is the fallback.
+    }
+  }
   if (isTauri) {
     const { openUrl } = await import("@tauri-apps/plugin-opener");
     await openUrl(url);

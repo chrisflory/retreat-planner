@@ -575,10 +575,12 @@ export default function LandSearch({
         <Stack gap={12}>
           <H2>1. Search the listing sites</H2>
           <Text tone="secondary">
-            Each button opens that site in your browser, filtered to the county, property type, {c.acresMin}–
-            {c.acresMax} acres{c.priceMax > 0 ? ` and under ${money(c.priceMax)}` : ""} on LandWatch, Land.com and
-            Lands of America. Zillow opens to the county's land listings, so set acres and price in its own filters.
-            If a site ever opens without the acreage applied, set it in the site's Acres filter. Save the search on the site to get new listings by email.
+            Each button opens that site filtered to the county, property type, {c.acresMin}–
+            {c.acresMax} acres{c.priceMax > 0 ? ` and under ${money(c.priceMax)}` : ""}. LandWatch opens in your usual
+            browser. Land.com, Lands of America, and Zillow refuse Brave with an Access Denied page, so those three
+            open in Chrome, or in Firefox if Chrome is not installed. Zillow still needs its own acres and price
+            filters. If a site ever opens without the acreage applied, set it in the site's Acres filter. Save the
+            search on the site to get new listings by email.
           </Text>
           <Table headers={["Where", "Open search"]} rows={linkRows} />
           <Callout tone="neutral" title="Why the app doesn't scrape the sites">
