@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App, { loadListingIntoPlan } from "./App";
+import type { Listing } from "./LandSearch";
 import LandSearch from "./LandSearch";
 import { Pill, Row, Text, useCanvasState } from "./ui";
 import { useTheme, type ThemeMode } from "./theme";
@@ -41,8 +42,8 @@ function Root() {
       </Row>
       {tab === "land" ? (
         <LandSearch
-          onUseInPlan={(state, price, acres) => {
-            loadListingIntoPlan(state, price, acres);
+          onUseInPlan={(state, price, acres, listing: Listing) => {
+            loadListingIntoPlan(state, price, acres, listing);
             setTab("plan");
           }}
         />

@@ -25,6 +25,16 @@ import {
   UsageBar,
   useCanvasState,
 } from "./ui";
+import { openExternal } from "./net";
+import {
+  bannedUses,
+  deedOf,
+  recordLinks,
+  resolveChosen,
+  USE_ITEMS,
+  type ChosenLand,
+  type ListingDeedSource,
+} from "./restrictions";
 
 type Status = "mfj" | "single";
 type Strategy = "lump" | "split" | "asNeeded";
@@ -847,6 +857,7 @@ const RECURRING: RecurringItem[] = [
   { id: "hunt", label: "Hunting: licenses, tags, ammo, feed corn", rule: "all", collapse: "Stockpiled ammo; traps need none" },
   { id: "water", label: "Water: well testing, filters", rule: "all", collapse: "Hand pump, rain catchment, pond + filter" },
   { id: "proptax", label: "Property tax", rule: "all", collapse: "Not collected" },
+  { id: "hoa", label: "HOA or road dues", rule: "all", collapse: "Not collected" },
   { id: "propane", label: "Propane", rule: "all", collapse: "Stored propane, then firewood" },
   { id: "firewood", label: "Firewood", rule: "all", collapse: "Cut your own with a bow saw and axe once gas runs out" },
   { id: "electric", label: "Electricity (grid bill, or generator fuel off-grid)", rule: "all", collapse: "Solar for essentials only, no A/C" },
@@ -869,7 +880,7 @@ const RECURRING: RecurringItem[] = [
 ];
 
 const RECURRING_DEFAULTS: Record<string, number> = {
-  food: 3600, hunt: 400, water: 300, proptax: 500, propane: 1500, firewood: 0, electric: 1500, gas: 1000, autoins: 1400,
+  food: 3600, hunt: 400, water: 300, proptax: 500, hoa: 0, propane: 1500, firewood: 0, electric: 1500, gas: 1000, autoins: 1400,
   rvins: 1000, liability: 500, aca: 3000, medicare: 4750, oop: 750, sos: 200, internet: 1900, maint: 2500,
   septic: 200, household: 1200, garden: 350, chickens: 350, trash: 200, rvreserve: 2500,
 };
@@ -895,7 +906,7 @@ const LIVING_PRESETS: Record<"bare" | "modest" | "comfortable", { label: string;
     label: "Comfortable",
     note: "The original estimates: full coverage insurance, Medigap Plan G at 65, regular RV replacement saving",
     values: Object.fromEntries(
-      Object.entries(RECURRING_DEFAULTS).filter(([k]) => !["proptax", "propane", "firewood", "electric"].includes(k)),
+      Object.entries(RECURRING_DEFAULTS).filter(([k]) => !["proptax", "hoa", "propane", "firewood", "electric"].includes(k)),
     ),
   },
 };
@@ -1331,6 +1342,7 @@ const REC_TIPS: Record<string, string> = {
   sos: "Satellite messenger subscription (Garmin inReach or similar) so you can call for help with no cell signal.",
   maint: "Repairs on the RV, tractor, chainsaw, generator and truck.",
   proptax: "County property tax on the land and anything permanent you build.",
+  hoa: "Yearly dues for an HOA or a road association on the parcel you chose in Land search. Use in plan copies the amount. Zero when that land has neither.",
   chickens: "Layer feed, grit, oyster shell, bedding and two replacement hens a year. About $58 per hen. Table scraps lower it. A dead flock does not.",
   garden: "Seed, compost or fertilizer, drip parts, row cover and canning lids. The fence is in the one-time garden line, not here.",
 };
@@ -1350,7 +1362,7 @@ function readStored<T extends object>(key: string, defaults: T): T {
   }
 }
 
-export function loadListingIntoPlan(state: StateId | null, price: number, acres: number) {
+export function loadListingIntoPlan(state: StateId | null, price: number, acres: number, listing?: ListingDeedSource) {
   let p = readStored<Params>("params-v2", DEFAULT_PARAMS);
   let up = readStored<Record<string, number>>("upfront-v2", PRESET_PLANNED);
   let rec = readStored<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
@@ -1361,6 +1373,21 @@ export function loadListingIntoPlan(state: StateId | null, price: number, acres:
   }
   if (state && STATES[state]) [p, up, rec] = applyState(state, p, up, rec);
   up = { ...up, land: Math.round(price) };
+  if (listing) {
+    const deed = deedOf(listing.deed);
+    const chosen: ChosenLand = {
+      id: listing.id,
+      name: listing.name,
+      url: listing.url,
+      county: listing.check?.county,
+      stateCode: listing.check?.stateCode,
+      price: listing.price,
+      acres: listing.acres,
+      deed,
+    };
+    localStorage.setItem("retreat-planner:chosen-land-v1", JSON.stringify(chosen));
+    rec = { ...rec, hoa: deed.hoa === "yes" ? Math.round(deed.hoaDues) : 0 };
+  }
   localStorage.setItem("retreat-planner:params-v2", JSON.stringify(p));
   localStorage.setItem("retreat-planner:upfront-v2", JSON.stringify(up));
   localStorage.setItem("retreat-planner:recurring-v2", JSON.stringify(rec));
@@ -1394,6 +1421,9 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     }
   }, []);
   const [storedEst, setStoredEst] = useCanvasState<Partial<Estimates>>("estimates-v1", {});
+  const [chosenStored, setChosen] = useCanvasState<ChosenLand | null>("chosen-land-v1", null);
+  const [landListings] = useCanvasState<ListingDeedSource[]>("land-listings-v1", []);
+  const chosen = resolveChosen(chosenStored, landListings);
   EST = mergeEst(storedEst);
   const est = EST;
   const AFFECTS: Record<string, { up?: Array<"land" | "winter" | "woodheat">; rec?: Array<"propane" | "firewood" | "proptax"> }> = {
@@ -1754,6 +1784,86 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         <Stat value={`${money(steadyPre65 / 12)}/mo`} label={`Living cost before 65 (${money(steadyPre65)}/yr), today's dollars`} />
       </Grid>
 
+      {chosen && (
+        <Card>
+          <CardHeader>HOA and deed restrictions: {chosen.name}</CardHeader>
+          <CardBody>
+            <Stack gap={10}>
+              <Text size="small" tone="secondary">
+                {chosen.county ? `${chosen.county} County` : "County not checked yet"}
+                {chosen.stateCode ? `, ${chosen.stateCode}` : ""}. {chosen.acres} acres at {money(chosen.price)}. These
+                answers are what you marked on Land search. The map check cannot see covenants or an association.
+                {chosen.stateCode && chosen.stateCode !== stateOf(p) ? ` The plan is currently set to ${st.name}.` : ""}
+              </Text>
+              <Row gap={6} wrap>
+                {recordLinks(chosen.county, chosen.stateCode).map((s) => (
+                  <Pill key={s.site} size="sm" onClick={() => void openExternal(s.url)}>
+                    {s.site}
+                  </Pill>
+                ))}
+                {chosen.url && (
+                  <Pill size="sm" onClick={() => void openExternal(chosen.url)}>
+                    Listing
+                  </Pill>
+                )}
+                <Pill
+                  size="sm"
+                  onClick={() => {
+                    setChosen(null);
+                    setRec((prev) => ({ ...prev, hoa: 0 }));
+                  }}
+                >
+                  Clear
+                </Pill>
+              </Row>
+              <Text size="small">
+                <Text size="small" weight="semibold">HOA or road association. </Text>
+                {chosen.deed.hoa === "yes"
+                  ? `${chosen.deed.hoaName.trim() || "Yes"}${chosen.deed.hoaDues > 0 ? `, ${money(chosen.deed.hoaDues)}/yr` : ""}`
+                  : chosen.deed.hoa === "none"
+                    ? "None"
+                    : "Not filled in"}
+                . <Text size="small" weight="semibold">Recorded covenants. </Text>
+                {chosen.deed.ccr === "recorded" ? "Recorded" : chosen.deed.ccr === "none" ? "None found" : "Not filled in"}.
+              </Text>
+              <Table
+                headers={["What the plan needs", "On this land"]}
+                rowTone={USE_ITEMS.map((item) =>
+                  chosen.deed[item.key] === "banned" ? "danger" : chosen.deed[item.key] === "allowed" ? "success" : "neutral",
+                )}
+                rows={USE_ITEMS.map((item) => [
+                  item.label,
+                  chosen.deed[item.key] === "banned" ? "Banned" : chosen.deed[item.key] === "allowed" ? "Allowed" : "Unknown",
+                ])}
+              />
+              {bannedUses(chosen.deed).length > 0 && (
+                <Callout tone="warning" title="A recorded rule blocks part of this plan">
+                  {bannedUses(chosen.deed).join(". ")}. Those uses are part of the retirement plan. Confirm the clause
+                  in the declaration before you count on this parcel.
+                </Callout>
+              )}
+              {chosen.deed.notes.trim() && (
+                <Text size="small" tone="secondary">
+                  {chosen.deed.notes.trim()}
+                </Text>
+              )}
+              <Text size="small" tone="tertiary">
+                {(() => {
+                  const dues = chosen.deed.hoa === "yes" ? Math.round(chosen.deed.hoaDues) : 0;
+                  const budget = rec.hoa ?? 0;
+                  if (dues === budget) {
+                    return dues > 0
+                      ? `${money(dues)}/yr is included in monthly costs as HOA or road dues.`
+                      : "No dues are included in the monthly costs.";
+                  }
+                  return `Land search shows ${money(dues)}/yr. Monthly costs still have ${money(budget)}/yr. Use in plan again to copy the dues.`;
+                })()}
+              </Text>
+            </Stack>
+          </CardBody>
+        </Card>
+      )}
+
       <div className="plan-main">
         <Card>
           <CardHeader>Assumptions</CardHeader>
@@ -1965,6 +2075,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                     setP(DEFAULT_PARAMS);
                     setRec(RECURRING_DEFAULTS);
                     setUp(PRESET_PLANNED);
+                    setChosen(null);
                   }}
                 >
                   Reset

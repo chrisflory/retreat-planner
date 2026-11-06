@@ -23,6 +23,18 @@ import { STATES, STATE_IDS, type StateId } from "./App";
 import { checkWater, fmtDist, miles, M_PER_MILE, parseLatLon, propertyRadiusM, runChecks, type CheckResult, type WaterFeature } from "./geo";
 import { LandMap } from "./LandMap";
 import { openExternal } from "./net";
+import {
+  deedOf,
+  hoaFinding,
+  recordLinks,
+  USE_ITEMS,
+  usesFinding,
+  type CcrStatus,
+  type DeedLimits,
+  type HoaStatus,
+  type UseAnswer,
+  type UseKey,
+} from "./restrictions";
 
 type PropType = "any" | "hunting" | "recreational" | "farms" | "undeveloped" | "timber" | "waterfront";
 
@@ -65,6 +77,8 @@ type Criteria = {
   noFlood: boolean;
   hospitalWithinMi: number;
   townWithinMi: number;
+  noHoa: boolean;
+  usesAllowed: boolean;
 };
 
 const DEFAULT_CRITERIA: Criteria = {
@@ -82,9 +96,11 @@ const DEFAULT_CRITERIA: Criteria = {
   noFlood: true,
   hospitalWithinMi: 45,
   townWithinMi: 20,
+  noHoa: true,
+  usesAllowed: true,
 };
 
-type Listing = {
+export type Listing = {
   id: string;
   name: string;
   url: string;
@@ -93,6 +109,7 @@ type Listing = {
   lat: number;
   lon: number;
   notes: string;
+  deed?: DeedLimits;
   check?: Omit<CheckResult, "water"> & { water?: Omit<NonNullable<CheckResult["water"]>, "features"> };
   checkedAt?: string;
 };
@@ -177,6 +194,25 @@ function evaluate(l: Listing, c: Criteria): Row[] {
       value: k?.town ? `${k.town.name}, ${miles(k.town.m).toFixed(0)} mi` : k?.town === null ? "none within 40 mi" : "not checked",
       verdict: k?.town !== undefined ? v(k.town !== null && miles(k.town.m) <= c.townWithinMi) : "unknown",
     });
+  const deed = deedOf(l.deed);
+  if (c.noHoa) {
+    const hoa = hoaFinding(deed);
+    rows.push({
+      label: "No HOA or road association",
+      value: hoa.value,
+      verdict: hoa.verdict,
+      note: "Marked from the listing, the plat, or the county clerk. The map check cannot see this",
+    });
+  }
+  if (c.usesAllowed) {
+    const uses = usesFinding(deed);
+    rows.push({
+      label: "RV, chickens, garden, hunting, well and outbuildings allowed",
+      value: uses.value,
+      verdict: uses.verdict,
+      note: "A recorded covenant can ban these even where the county has no zoning",
+    });
+  }
   if (k?.elevationFt !== undefined) rows.push({ label: "Elevation at pin", value: `${Math.round(k.elevationFt).toLocaleString("en-US")} ft`, verdict: "unknown" });
   return rows;
 }
@@ -208,10 +244,118 @@ function Num({ value, onChange, width = 90 }: { value: number; onChange: (n: num
 
 const EMPTY_FORM = { name: "", url: "", price: "", acres: "", where: "", notes: "" };
 
+function Choice<T extends string>({ value, options, onChange }: { value: T; options: { id: T; label: string }[]; onChange: (v: T) => void }) {
+  return (
+    <Row gap={4} wrap>
+      {options.map((o) => (
+        <Pill key={o.id} size="sm" active={value === o.id} onClick={() => onChange(o.id)}>
+          {o.label}
+        </Pill>
+      ))}
+    </Row>
+  );
+}
+
+const HOA_CHOICES: { id: HoaStatus; label: string }[] = [
+  { id: "unknown", label: "Unknown" },
+  { id: "none", label: "None" },
+  { id: "yes", label: "Yes" },
+];
+const CCR_CHOICES: { id: CcrStatus; label: string }[] = [
+  { id: "unknown", label: "Unknown" },
+  { id: "none", label: "None found" },
+  { id: "recorded", label: "Recorded" },
+];
+const USE_CHOICES: { id: UseAnswer; label: string }[] = [
+  { id: "unknown", label: "Unknown" },
+  { id: "allowed", label: "Allowed" },
+  { id: "banned", label: "Banned" },
+];
+
+function DeedCard({ listing, onChange }: { listing: Listing; onChange: (patch: Partial<DeedLimits>) => void }) {
+  const d = deedOf(listing.deed);
+  const county = listing.check?.county;
+  const stateCode = listing.check?.stateCode;
+  const setUse = (key: UseKey, v: UseAnswer) => onChange({ [key]: v });
+  return (
+    <Card>
+      <CardHeader>HOA and recorded restrictions</CardHeader>
+      <CardBody>
+        <Stack gap={10}>
+          <Text size="small" tone="secondary">
+            Covenants are private rules recorded with the county clerk. They bind later owners. A listing that says
+            unrestricted often means the county has no zoning, not that nobody recorded rules. Rules can ban an RV,
+            chickens, a garden fence, hunting, a well, or anything short of a site-built house. Some tracts have no
+            association and still have covenants. Others have an association only to collect road dues.
+          </Text>
+          <Text size="small" tone="secondary">
+            Ask the seller for every declaration and plat. Then read the title commitment: recorded restrictions are
+            listed in Schedule B by book and page. Search the clerk's index for the subdivision name and the seller's
+            name. An empty search for one instrument type does not mean the tract is clear.
+            {stateCode === "OK" &&
+              " In Oklahoma the title company has to give the buyer a copy of the recorded covenants at closing, for at most $25 (60 O.S. § 857)."}
+          </Text>
+          <Row gap={6} wrap>
+            {recordLinks(county, stateCode).map((s) => (
+              <Pill key={s.site} size="sm" onClick={() => void openExternal(s.url)}>
+                {s.site}
+              </Pill>
+            ))}
+          </Row>
+          {!county && (
+            <Text size="small" tone="tertiary">
+              The county clerk link uses this pin's county once the check finishes.
+            </Text>
+          )}
+          <Row gap={8} align="center" justify="space-between" wrap>
+            <Text size="small" tone="secondary">HOA or road association</Text>
+            <Choice value={d.hoa} options={HOA_CHOICES} onChange={(v) => onChange({ hoa: v, hoaDues: v === "yes" ? d.hoaDues : 0 })} />
+          </Row>
+          {d.hoa === "yes" && (
+            <>
+              <Field label="Association name">
+                <TextInput value={d.hoaName} onChange={(v) => onChange({ hoaName: v })} placeholder="Name" style={{ width: 180 }} />
+              </Field>
+              <Field label="Dues, $ per year">
+                <Num value={d.hoaDues} onChange={(n) => onChange({ hoaDues: n })} />
+              </Field>
+            </>
+          )}
+          <Row gap={8} align="center" justify="space-between" wrap>
+            <Text size="small" tone="secondary">Recorded covenants</Text>
+            <Choice value={d.ccr} options={CCR_CHOICES} onChange={(v) => onChange({ ccr: v })} />
+          </Row>
+          <Divider />
+          <Text size="small" weight="semibold">
+            What this plan needs the rules to allow
+          </Text>
+          {USE_ITEMS.map((item) => (
+            <Row key={item.key} gap={8} align="center" justify="space-between" wrap>
+              <Text size="small" tone="secondary">{item.label}</Text>
+              <Choice value={d[item.key]} options={USE_CHOICES} onChange={(v) => setUse(item.key, v)} />
+            </Row>
+          ))}
+          <Stack gap={4}>
+            <Text size="small" tone="secondary">
+              Restriction language, from the declaration or Schedule B
+            </Text>
+            <textarea
+              className="input"
+              value={d.notes}
+              onChange={(e) => onChange({ notes: e.target.value })}
+              placeholder="Paste the clauses that mention dwellings, animals, hunting, wells, or dues."
+            />
+          </Stack>
+        </Stack>
+      </CardBody>
+    </Card>
+  );
+}
+
 export default function LandSearch({
   onUseInPlan,
 }: {
-  onUseInPlan: (state: StateId | null, price: number, acres: number) => void;
+  onUseInPlan: (state: StateId | null, price: number, acres: number, listing: Listing) => void;
 }) {
   const [storedC, setC] = useCanvasState<Criteria>("land-criteria-v1", DEFAULT_CRITERIA);
   const c: Criteria = { ...DEFAULT_CRITERIA, ...storedC };
@@ -280,6 +424,10 @@ export default function LandSearch({
     if (selectedId === id) setSelectedId(null);
   };
 
+  const setDeed = (id: string, patch: Partial<DeedLimits>) => {
+    setListings((prev) => prev.map((x) => (x.id === id ? { ...x, deed: { ...deedOf(x.deed), ...patch } } : x)));
+  };
+
   const planState = (l: Listing): StateId | null =>
     STATE_IDS.find((id) => STATE_META[id].code === l.check?.stateCode) ?? null;
 
@@ -302,7 +450,7 @@ export default function LandSearch({
           Set what you're looking for, open the listing sites already filtered to your counties and property type, then
           drop each promising listing on the map. The app checks it against free government and map data: USGS water,
           FEMA flood zones, elevation, county, mapped power lines, and the nearest hospital and town. It scores the
-          listing against your criteria and can load the price into the retirement plan.
+          listing against your criteria and can load the price into the retirement plan. Deed restrictions and an HOA are not in that map data. Mark them from the listing, the plat, and the county clerk, and they travel with the parcel when you use it in the plan.
         </Text>
       </Stack>
 
@@ -361,6 +509,12 @@ export default function LandSearch({
               <Field label="Town within, miles (0 = skip)">
                 <Num value={c.townWithinMi} onChange={(n) => set("townWithinMi", n)} width={70} />
               </Field>
+              <Field label="No HOA or road association">
+                <Toggle checked={c.noHoa} onChange={(v) => set("noHoa", v)} />
+              </Field>
+              <Field label="Plan's uses allowed by covenants">
+                <Toggle checked={c.usesAllowed} onChange={(v) => set("usesAllowed", v)} />
+              </Field>
               <Divider />
               <Pill onClick={() => setC(DEFAULT_CRITERIA)}>Reset criteria</Pill>
             </Stack>
@@ -382,9 +536,9 @@ export default function LandSearch({
             their rules, and their free email alerts do the watching for you.
           </Callout>
           <Callout tone="info" title="Also worth checking">
-            The listing's county GIS or appraiser site (for parcel lines, owner and taxes), the electric co-op (a
-            written line-extension quote), starlink.com/map (service at the address), and your state's
-            wildlife department maps of public hunting land nearby.
+            The listing's county GIS or appraiser site (for parcel lines, owner and taxes), the county clerk for
+            recorded covenants and any owners' association, the electric co-op (a written line-extension quote),
+            starlink.com/map (service at the address), and your state's wildlife department maps of public hunting land nearby.
           </Callout>
         </Stack>
       </Grid>
@@ -441,8 +595,8 @@ export default function LandSearch({
 
         {listings.length > 0 && (
           <Table
-            headers={["Listing", "Price", "Acres", "$/acre", "Nearest water", "Flood zone", "Power line", "Hospital", "Meets", ""]}
-            columnAlign={["left", "right", "right", "right", "left", "left", "left", "left", "left", "left"]}
+            headers={["Listing", "Price", "Acres", "$/acre", "Nearest water", "Flood zone", "Power line", "Hospital", "HOA", "Meets", ""]}
+            columnAlign={["left", "right", "right", "right", "left", "left", "left", "left", "left", "left", "left"]}
             rowTone={evaluated.map(({ l }) => (l.id === selectedId ? "info" : undefined))}
             rows={evaluated.map(({ l, rows }) => {
               const s = score(rows);
@@ -458,8 +612,9 @@ export default function LandSearch({
                 k?.flood ? (k.flood.zone ?? "unmapped") : k?.errors.flood ? "error" : busy[l.id] ? "checking…" : "—",
                 k?.power ? fmtDist(k.power.nearestM) : k?.errors.osm ? "error" : busy[l.id] ? "checking…" : "—",
                 k?.hospital ? `${miles(k.hospital.m).toFixed(0)} mi` : k?.hospital === null ? "50+ mi" : busy[l.id] ? "checking…" : "—",
-                <Text key="s" size="small" weight="semibold" style={{ color: k ? s.tone : undefined }}>
-                  {k ? `${s.pass} of ${s.total}` : "—"}
+                l.deed?.hoa === "yes" ? "Yes" : l.deed?.hoa === "none" ? "None" : "—",
+                <Text key="s" size="small" weight="semibold" style={{ color: k || l.deed ? s.tone : undefined }}>
+                  {k || l.deed ? `${s.pass} of ${s.total}` : "—"}
                 </Text>,
                 <Row key="a" gap={4} wrap>
                   {l.url && (
@@ -470,7 +625,7 @@ export default function LandSearch({
                   <Pill size="sm" onClick={() => void check(l)}>
                     {busy[l.id] ? "Checking…" : "Recheck"}
                   </Pill>
-                  <Pill size="sm" onClick={() => onUseInPlan(planState(l), l.price, l.acres)}>
+                  <Pill size="sm" onClick={() => onUseInPlan(planState(l), l.price, l.acres, l)}>
                     Use in plan
                   </Pill>
                   <Pill size="sm" onClick={() => remove(l.id)}>
@@ -499,6 +654,7 @@ export default function LandSearch({
                 </Text>,
               ])}
             />
+            <DeedCard listing={selected} onChange={(patch) => setDeed(selected.id, patch)} />
             {selected.notes && (
               <Text size="small" tone="secondary">
                 Notes: {selected.notes}
