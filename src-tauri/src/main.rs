@@ -2,8 +2,9 @@
 
 use std::process::{Command, Stdio};
 
-/// Land.com, Lands of America, and Zillow answer Brave (and anything that looks like it)
-/// with an Akamai "Access Denied" page. Chrome and Firefox get the real search.
+/// Land.com, Lands of America, and Zillow answer Brave with an Akamai "Access Denied"
+/// page. Open those hosts in Chrome or Firefox. Filtered price paths are still denied
+/// there; the app avoids those addresses and opens the county listing page instead.
 fn clear_browser(host: &str) -> bool {
     let host = host.trim_start_matches("www.");
     host == "land.com"

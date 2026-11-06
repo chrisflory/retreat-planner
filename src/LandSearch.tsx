@@ -127,9 +127,6 @@ function searchLinks(c: Criteria, county: string | null) {
   const lcPlace = county ? `${title(county)}-County-${code}` : st.name.replace(/\s+/g, "-");
   const lo = Math.max(0, Math.round(c.acresMin));
   const hi = Math.max(0, Math.round(c.acresMax));
-  const price = c.priceMax > 0 ? `under-${Math.round(c.priceMax)}/` : "";
-  const lcAcres =
-    lo > 0 && hi > lo ? `${lo}-${hi}-acres/` : lo > 0 ? `over-${lo}-acres/` : hi > 0 ? `under-${hi}-acres/` : "";
   const lwAcres =
     lo > 0 && hi > lo ? `/acres-${lo}-${hi}` : lo > 0 ? `/acres-over-${lo}` : hi > 0 ? `/acres-under-${hi}` : "";
   const lwPrice = c.priceMax > 0 ? `/price-under-${Math.round(c.priceMax)}` : "";
@@ -137,8 +134,10 @@ function searchLinks(c: Criteria, county: string | null) {
   const google = `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
   return [
     { site: "LandWatch", url: `https://www.landwatch.com/${place}-${t.lw}-for-sale${lwAcres}${lwPrice}` },
-    { site: "Land.com", url: `https://www.land.com/${lcPlace}/${t.lc}/${lcAcres}${price}` },
-    { site: "Lands of America", url: `https://www.landsofamerica.com/${lcPlace}/${t.lc}/${lcAcres}${price}` },
+    // Acre and price path segments (25-50-acres/under-75000) are refused by Akamai
+    // in every browser, including Chrome. The county listing page is the one the site serves.
+    { site: "Land.com", url: `https://www.land.com/${lcPlace}/${t.lc}/` },
+    { site: "Lands of America", url: `https://www.landsofamerica.com/${lcPlace}/${t.lc}/` },
     { site: "Zillow (land)", url: county ? `https://www.zillow.com/${slug(county)}-county-${code.toLowerCase()}/land/` : `https://www.zillow.com/${code.toLowerCase()}/land/` },
     { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
   ];
@@ -575,12 +574,11 @@ export default function LandSearch({
         <Stack gap={12}>
           <H2>1. Search the listing sites</H2>
           <Text tone="secondary">
-            Each button opens that site filtered to the county, property type, {c.acresMin}–
-            {c.acresMax} acres{c.priceMax > 0 ? ` and under ${money(c.priceMax)}` : ""}. LandWatch opens in your usual
-            browser. Land.com, Lands of America, and Zillow refuse Brave with an Access Denied page, so those three
-            open in Chrome, or in Firefox if Chrome is not installed. Zillow still needs its own acres and price
-            filters. If a site ever opens without the acreage applied, set it in the site's Acres filter. Save the
-            search on the site to get new listings by email.
+            LandWatch opens in your usual browser, already filtered to the county, property type, {c.acresMin}–
+            {c.acresMax} acres{c.priceMax > 0 ? `, and under ${money(c.priceMax)}` : ""}. Land.com and Lands of America
+            refuse that kind of filtered address with Access Denied, in Chrome as well as Brave, so those two open the
+            county listings in Chrome and you set the acres and price on the site. Zillow opens in Chrome and needs
+            its own acres and price filters. Save the search on the site to get new listings by email.
           </Text>
           <Table headers={["Where", "Open search"]} rows={linkRows} />
           <Callout tone="neutral" title="Why the app doesn't scrape the sites">
