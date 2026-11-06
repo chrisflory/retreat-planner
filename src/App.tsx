@@ -55,6 +55,8 @@ type Params = {
   rule55: boolean;
   ssMonthly: number;
   ssAge: number;
+  /** Monthly benefit at full retirement age. The check at ssAge is derived from this. */
+  ssPia?: number;
   otherIncome: number;
   otherUntil: number;
   ret: number;
@@ -963,13 +965,57 @@ function yearsToRetire(p: { startYear?: number }) {
   return Math.max(0, Math.round(p.startYear ?? THIS_YEAR) - THIS_YEAR);
 }
 
+/** Full retirement age in months, from the Social Security birth-year table. */
+function fraMonths(birthYear: number): number {
+  if (birthYear <= 1937) return 65 * 12;
+  if (birthYear >= 1960) return 67 * 12;
+  if (birthYear >= 1943) return 66 * 12;
+  return 65 * 12 + (birthYear - 1937) * 2;
+}
+
+function fraText(months: number) {
+  const years = Math.floor(months / 12);
+  const extra = months % 12;
+  return extra === 0 ? `age ${years}` : `${years} and ${extra} months`;
+}
+
+/** Share of the full benefit paid at claimAge. Credits stop at 70 and payments don't start before 62. */
+function ssBenefitFactor(claimAge: number, fraM: number) {
+  const claimM = Math.min(70 * 12, Math.max(62 * 12, Math.round(claimAge * 12)));
+  const early = fraM - claimM;
+  if (early > 0) {
+    const first = Math.min(early, 36);
+    const rest = Math.max(0, early - 36);
+    return 1 - (first * (5 / 9) + rest * (5 / 12)) / 100;
+  }
+  return 1 + Math.max(0, claimM - fraM) * (2 / 3) / 100;
+}
+
+function clampSsAge(n: number) {
+  const months = Math.round((Number.isFinite(n) ? n : 67) * 12);
+  return Math.min(70 * 12, Math.max(62 * 12, months)) / 12;
+}
+
+function ssPiaOf(p: { ssPia?: number; ssMonthly?: number; ssAge?: number }, ageNow: number) {
+  if (p.ssPia != null && Number.isFinite(p.ssPia)) return Math.max(0, p.ssPia);
+  const factor = ssBenefitFactor(p.ssAge ?? 62, fraMonths(THIS_YEAR - Math.round(ageNow)));
+  return factor > 0 ? Math.max(0, (p.ssMonthly ?? 0) / factor) : 0;
+}
+
+function ssMonthlyAt(pia: number, claimAge: number, ageNow: number) {
+  return Math.round(pia * ssBenefitFactor(claimAge, fraMonths(THIS_YEAR - Math.round(ageNow))));
+}
+
 function linkAges(prev: Partial<Params>, which: "now" | "retire" | "year", n: number): Params {
   const now0 = ageNowFrom(prev);
   const base: Params = { ...DEFAULT_PARAMS, ...prev, ageNow: now0 };
   if (which === "now") {
     const now = clampPlanAge(n);
     const retire = Math.min(MAX_PLAN_AGE, now + yearsToRetire(base));
-    return { ...base, ageNow: now, retireAge: retire, startYear: THIS_YEAR + (retire - now) };
+    const next = { ...base, ageNow: now, retireAge: retire, startYear: THIS_YEAR + (retire - now) };
+    if (next.ssPia == null) return next;
+    const age = clampSsAge(next.ssAge);
+    return { ...next, ssAge: age, ssMonthly: ssMonthlyAt(next.ssPia, age, now) };
   }
   if (which === "year") {
     const year = Math.min(THIS_YEAR + (MAX_PLAN_AGE - now0), Math.max(THIS_YEAR, Math.round(n)));
@@ -1261,11 +1307,11 @@ const TIPS: Record<string, string> = {
   "Interest rate, %": "Seller-financed land typically runs 6–9%.",
   "Loan length, years": "Typical seller financing is 5–15 years, sometimes with a balloon payment due early.",
   "Social Security, $/mo":
-    "Your estimated monthly benefit at the claiming age below. Get your real figure from your my Social Security account at ssa.gov.",
+    "The monthly check at the claim age beside it. Changing that age recalculates this from the same full benefit. Type a new amount to set the benefit at the age shown. Get the real figure from your my Social Security account at ssa.gov.",
   "Social Security, $/mo combined":
-    "Combined monthly benefit for the household at the claiming age below. Get real figures from my Social Security at ssa.gov.",
+    "Combined monthly check for the household at the claim age beside it. Changing that age recalculates this from the same full benefit. Get real figures from my Social Security at ssa.gov.",
   "Claim Social Security at age":
-    "62 is the earliest, at about 70% of your full benefit. Full benefit is at 67 for anyone born in 1960 or later. Waiting until 70 pays about 124%.",
+    "Any age from 62 to 70. 62 pays 70% of the full benefit when full retirement age is 67, 65 pays about 86.7%, 67 pays 100%, and 70 pays 124%. The monthly amount updates when you change this.",
   "Part-time income, $/yr": "Any work income after you retire, counted until the age below.",
   "Part-time work until age": "The last age the part-time income is counted.",
   "Return on savings, %":
@@ -1461,6 +1507,21 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   };
 
   const set = <K extends keyof Params>(k: K, v: Params[K]) => setP((prev) => ({ ...prev, [k]: v }));
+  const setSsMonthly = (n: number) =>
+    setP((prev) => {
+      const now = ageNowFrom(prev);
+      const age = clampSsAge(prev.ssAge ?? 67);
+      const monthly = Math.max(0, Math.round(Number.isFinite(n) ? n : 0));
+      const factor = ssBenefitFactor(age, fraMonths(THIS_YEAR - now));
+      return { ...prev, ssAge: age, ssMonthly: monthly, ssPia: factor > 0 ? monthly / factor : 0 };
+    });
+  const setSsAge = (n: number) =>
+    setP((prev) => {
+      const now = ageNowFrom(prev);
+      const age = clampSsAge(n);
+      const pia = ssPiaOf(prev, now);
+      return { ...prev, ssAge: age, ssPia: pia, ssMonthly: ssMonthlyAt(pia, age, now) };
+    });
   const setAgeNow = (n: number) => setP((prev) => linkAges(prev, "now", n));
   const setRetireAge = (n: number) => setP((prev) => linkAges(prev, "retire", n));
   const setStartYear = (n: number) => setP((prev) => linkAges(prev, "year", n));
@@ -1986,11 +2047,22 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               )}
               <Divider />
               <Field label={adults > 1 ? "Social Security, $/mo combined" : "Social Security, $/mo"}>
-                <NumField value={p.ssMonthly} onChange={(n) => set("ssMonthly", n)} />
+                <NumField value={p.ssMonthly} onChange={setSsMonthly} />
               </Field>
               <Field label="Claim Social Security at age">
-                <NumField value={p.ssAge} onChange={(n) => set("ssAge", n)} width={64} />
+                <NumField value={p.ssAge} onChange={setSsAge} width={64} />
               </Field>
+              <div className="span-2">
+                <Text size="small" tone="tertiary">
+                  {(() => {
+                    const fra = fraMonths(THIS_YEAR - ageNow);
+                    const factor = ssBenefitFactor(p.ssAge, fra);
+                    const pct = Math.round(factor * 1000) / 10;
+                    const full = Math.round(ssPiaOf(p, ageNow));
+                    return `Full retirement age is ${fraText(fra)}. This check is ${pct}% of the ${money(full)} full benefit. Changing the age recalculates it. Payments start at 62 and the increase stops at 70.`;
+                  })()}
+                </Text>
+              </div>
               <Field label="Part-time income, $/yr">
                 <NumField value={p.otherIncome} onChange={(n) => set("otherIncome", n)} />
               </Field>
@@ -2120,8 +2192,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           <Callout tone="info" title="What moves the outcome most">
             Try these one at a time and watch the age change. First, set Withdrawal to "As needed": you pay less tax and
             keep subsidized health insurance in later years. Second, add $15–20K/yr of part-time income until 62.
-            Third, click "Lean build". Fourth, enter your real Social Security figure from ssa.gov. The $1,400/mo
-            default is a placeholder estimate for one person claiming at 62. Use roughly $2,000 combined for a couple
+            Third, click "Lean build".             Fourth, enter your real Social Security figure from ssa.gov at the age you plan to claim. The $1,400/mo
+            default is a placeholder for one person at 62. Changing the claim age recalculates it. Use roughly $2,000 combined for a couple
             where one spouse claims a spousal benefit.
           </Callout>
           <Callout tone={savings > 0 ? "success" : "neutral"} title="Other savings">
