@@ -27,6 +27,14 @@ import {
 } from "./ui";
 import { openExternal } from "./net";
 import {
+  clampAcresToRange,
+  DEFAULT_COUNTIES,
+  expandAcreRange,
+  patchLinkedLand,
+  readLinkedLand,
+  type LinkedLand,
+} from "./planLink";
+import {
   bannedUses,
   deedOf,
   recordLinks,
@@ -796,7 +804,7 @@ type UpfrontItem = {
 };
 
 const UPFRONT: UpfrontItem[] = [
-  { id: "land", label: "Land, 50 acres", note: "Acres × the state's $/acre under Estimates; edit to match a real listing", hardening: false },
+  { id: "land", label: "Land, 50 acres", note: "Same amount as the Land search maximum. A listing loaded with Use in plan replaces it. Editing the state's $/acre under Estimates also rewrites it.", hardening: false },
   { id: "winter", label: "Year-round insulated shelter", note: "Required where winters reach −20°F; an RV alone won't survive it", hardening: false },
   { id: "rv", label: "Used RV", note: "Look for a 4-season unit; it lives outdoors through ice storms and 100°F summers", hardening: false },
   { id: "closing", label: "Closing, survey, title", note: "Rural tracts often need a new survey", hardening: false },
@@ -1273,7 +1281,7 @@ const TIPS: Record<string, string> = {
   State:
     "Where you'll buy. Sets the land price, property tax, heating, game, state income tax and every state-specific note. Your other edits stay.",
   "Acres you're buying":
-    "Size of the property. Land cost is acres × the state's price per acre (edit that under Estimates), or the listing price if you used one from Land search.",
+    "Size of the property in the plan. The same acreage is kept inside the Land search minimum and maximum. The land cost is the Land search maximum, not acres times the state's price per acre.",
   "Adults in household":
     "People living there. Groceries, health insurance, Medicare, out-of-pocket medical and household costs are per person. Two or more adults switches filing status to married, joint.",
   "Age you are now":
@@ -1388,7 +1396,7 @@ const REC_TIPS: Record<string, string> = {
   sos: "Satellite messenger subscription (Garmin inReach or similar) so you can call for help with no cell signal.",
   maint: "Repairs on the RV, tractor, chainsaw, generator and truck.",
   proptax: "County property tax on the land and anything permanent you build.",
-  hoa: "Yearly dues for an HOA or a road association on the parcel you chose in Land search. Use in plan copies the amount. Zero when that land has neither.",
+  hoa: "Yearly dues for an HOA or a road association. On a parcel you chose in Land search, this is the same number as that listing's dues.",
   chickens: "Layer feed, grit, oyster shell, bedding and two replacement hens a year. About $58 per hen. Table scraps lower it. A dead flock does not.",
   garden: "Seed, compost or fertilizer, drip parts, row cover and canning lids. The fence is in the one-time garden line, not here.",
 };
@@ -1437,6 +1445,44 @@ export function loadListingIntoPlan(state: StateId | null, price: number, acres:
   localStorage.setItem("retreat-planner:params-v2", JSON.stringify(p));
   localStorage.setItem("retreat-planner:upfront-v2", JSON.stringify(up));
   localStorage.setItem("retreat-planner:recurring-v2", JSON.stringify(rec));
+  patchLinkedLand({
+    priceMax: Math.max(0, Math.round(price)),
+    ...(state && STATES[state] ? { state, counties: DEFAULT_COUNTIES[state] } : {}),
+  });
+  if (acres > 0) expandAcreRange(acres);
+}
+
+/** Copy the saved land search onto the plan: state, acreage, and the price maximum. */
+export function publishLandSearch() {
+  const c = readLinkedLand();
+  if (!c.saved) return;
+  let p = readStored<Params>("params-v2", DEFAULT_PARAMS);
+  let up = readStored<Record<string, number>>("upfront-v2", PRESET_PLANNED);
+  let rec = readStored<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
+  EST = mergeEst(readStored<Partial<Estimates>>("estimates-v1", {}));
+  const id = (c.state && STATES[c.state as StateId] ? c.state : stateOf(p)) as StateId;
+  if (id !== stateOf(p)) [p, up, rec] = applyState(id, p, up, rec);
+  up = { ...up, land: Math.max(0, Math.round(c.priceMax)) };
+  EST = { ...EST, acres: clampAcresToRange(c.acresMin, c.acresMax) };
+  localStorage.setItem("retreat-planner:params-v2", JSON.stringify(p));
+  localStorage.setItem("retreat-planner:upfront-v2", JSON.stringify(up));
+  localStorage.setItem("retreat-planner:estimates-v1", JSON.stringify(EST));
+  localStorage.setItem("retreat-planner:recurring-v2", JSON.stringify(rec));
+}
+
+/** Land search changed state. Keep the land budget and refresh the state-specific costs. */
+export function applyLinkedState(id: StateId) {
+  let p = readStored<Params>("params-v2", DEFAULT_PARAMS);
+  let up = readStored<Record<string, number>>("upfront-v2", PRESET_PLANNED);
+  let rec = readStored<Record<string, number>>("recurring-v2", RECURRING_DEFAULTS);
+  EST = mergeEst(readStored<Partial<Estimates>>("estimates-v1", {}));
+  const budget = up.land;
+  if (STATES[id]) [p, up, rec] = applyState(id, p, up, rec);
+  up = { ...up, land: budget };
+  localStorage.setItem("retreat-planner:params-v2", JSON.stringify(p));
+  localStorage.setItem("retreat-planner:upfront-v2", JSON.stringify(up));
+  localStorage.setItem("retreat-planner:recurring-v2", JSON.stringify(rec));
+  patchLinkedLand({ state: id, counties: DEFAULT_COUNTIES[id] });
 }
 
 export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustain" }) {
@@ -1468,12 +1514,12 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   }, []);
   const [storedEst, setStoredEst] = useCanvasState<Partial<Estimates>>("estimates-v1", {});
   const [chosenStored, setChosen] = useCanvasState<ChosenLand | null>("chosen-land-v1", null);
-  const [landListings] = useCanvasState<ListingDeedSource[]>("land-listings-v1", []);
+  const [landListings, setLandListings] = useCanvasState<ListingDeedSource[]>("land-listings-v1", []);
   const chosen = resolveChosen(chosenStored, landListings);
   EST = mergeEst(storedEst);
   const est = EST;
+  const [linked, setLinked] = useState<LinkedLand>(() => readLinkedLand());
   const AFFECTS: Record<string, { up?: Array<"land" | "winter" | "woodheat">; rec?: Array<"propane" | "firewood" | "proptax"> }> = {
-    acres: { up: ["land"] },
     landPerAcre: { up: ["land"] },
     winterShelter: { up: ["winter"] },
     stove: { up: ["woodheat"] },
@@ -1491,7 +1537,15 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     const a = AFFECTS[key];
     if (!a || !current) return;
     const d = derivedForState(stateOf(p), p.heat ?? "propane");
-    if (a.up) setUp((prev) => ({ ...prev, ...Object.fromEntries(a.up!.map((k) => [k, d.up[k]])) }));
+    if (a.up) {
+      const patch = Object.fromEntries(a.up.map((k) => [k, d.up[k]]));
+      setUp((prev) => ({ ...prev, ...patch }));
+      if (a.up.includes("land")) {
+        const price = Math.max(0, Math.round(d.up.land));
+        patchLinkedLand({ priceMax: price });
+        setLinked((prev) => ({ ...prev, priceMax: price, saved: true }));
+      }
+    }
     if (a.rec) setRec((prev) => ({ ...prev, ...Object.fromEntries(a.rec!.map((k) => [k, d.rec[k]])) }));
   };
   const setEst = <K extends Exclude<keyof Estimates, "states">>(k: K, v: number) =>
@@ -1504,6 +1558,16 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     const d = derivedForState(stateOf(p), p.heat ?? "propane");
     setUp((prev) => ({ ...prev, ...d.up }));
     setRec((prev) => ({ ...prev, ...d.rec }));
+    const price = Math.max(0, Math.round(d.up.land));
+    const range = expandAcreRange(DEFAULT_EST.acres);
+    patchLinkedLand({ priceMax: price, ...range });
+    setLinked((prev) => ({ ...prev, priceMax: price, ...range, saved: true }));
+  };
+  const setAcres = (n: number) => {
+    const acres = Math.max(0, Math.round(n));
+    updateEst({ ...est, acres }, "acres", false);
+    const range = expandAcreRange(acres);
+    setLinked((prev) => ({ ...prev, ...range, saved: true }));
   };
 
   const set = <K extends keyof Params>(k: K, v: Params[K]) => setP((prev) => ({ ...prev, [k]: v }));
@@ -1528,10 +1592,40 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const st = STATES[stateOf(p)];
   const pickState = (id: StateId) => {
     const [np, nu, nr] = applyState(id, p, up, rec);
+    const budget = up.land ?? nu.land;
     setP(np);
-    setUp(nu);
+    setUp({ ...nu, land: budget });
     setRec(nr);
+    const counties = DEFAULT_COUNTIES[id] ?? "";
+    patchLinkedLand({ state: id, counties });
+    setLinked((prev) => ({ ...prev, state: id, counties, saved: true }));
   };
+  useEffect(() => {
+    const c = readLinkedLand();
+    if (!c.saved) return;
+    const budget = Math.max(0, Math.round(c.priceMax));
+    const id = (c.state && STATES[c.state as StateId] ? c.state : stateOf(p)) as StateId;
+    let nextRec = rec;
+    if (id !== stateOf(p)) {
+      const [np, nu, nr] = applyState(id, p, up, rec);
+      nextRec = nr;
+      setP(np);
+      setUp({ ...nu, land: budget });
+    } else if (budget !== Math.round(up.land ?? 0)) {
+      setUp((prev) => ({ ...prev, land: budget }));
+    }
+    const nextAcres = clampAcresToRange(c.acresMin, c.acresMax);
+    if (nextAcres !== est.acres) updateEst({ ...est, acres: nextAcres }, "acres", false);
+    const live = resolveChosen(chosenStored, landListings);
+    if (live) {
+      const dues = live.deed.hoa === "yes" ? Math.round(live.deed.hoaDues) : 0;
+      if ((nextRec.hoa ?? 0) !== dues) nextRec = { ...nextRec, hoa: dues };
+    }
+    if (nextRec !== rec) setRec(nextRec);
+    setLinked(c);
+    // Once per visit: a land search saved earlier becomes the plan's state, acres, and land cost.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const applyPreset = (preset: Record<string, number>) =>
     setUp({
       ...preset,
@@ -1606,8 +1700,25 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     return u.note;
   };
 
+  const setYearly = (id: string, yearly: number) => {
+    const amount = Math.round(yearly);
+    setRec((prev) => ({ ...prev, [id]: amount }));
+    if (id !== "hoa" || !chosenStored) return;
+    const dues = Math.max(0, amount);
+    const stamp = (deed: ReturnType<typeof deedOf>) => ({
+      ...deed,
+      hoaDues: dues,
+      hoa: dues > 0 ? ("yes" as const) : deed.hoa,
+    });
+    setLandListings((prev) =>
+      prev.map((l) => (l.id === chosenStored.id ? { ...l, deed: stamp(deedOf(l.deed)) } : l)),
+    );
+    setChosen((prev) => (prev ? { ...prev, deed: stamp(deedOf(prev.deed)) } : prev));
+  };
+
   const stateRows = STATE_IDS.map((id) => {
     const [sp, su, sr] = applyState(id, p, up, rec);
+    if (id === stateOf(p)) su.land = up.land ?? su.land;
     const total = upfrontTotalFor(sp, su);
     const sim = simulate(sp, sr, total, sp.inflation, null, su.land ?? 0);
     return {
@@ -1717,13 +1828,13 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     <NumField
       key={`${item.id}-mo`}
       value={Math.round((rec[item.id] ?? 0) / 12)}
-      onChange={(n) => setRec((prev) => ({ ...prev, [item.id]: n * 12 }))}
+      onChange={(n) => setYearly(item.id, n * 12)}
       width={72}
     />,
     <NumField
       key={`${item.id}-yr`}
       value={rec[item.id] ?? 0}
-      onChange={(n) => setRec((prev) => ({ ...prev, [item.id]: n }))}
+      onChange={(n) => setYearly(item.id, n)}
       width={80}
     />,
     item.rule === "pre65" ? "Until 65" : item.rule === "post65" ? "65+" : "Every year",
@@ -1744,7 +1855,13 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         <NumField
           key={u.id}
           value={up[u.id] ?? 0}
-          onChange={(n) => setUp((prev) => ({ ...prev, [u.id]: n }))}
+          onChange={(n) => {
+            setUp((prev) => ({ ...prev, [u.id]: n }));
+            if (u.id !== "land") return;
+            const price = Math.max(0, Math.round(n));
+            patchLinkedLand({ priceMax: price });
+            setLinked((prev) => ({ ...prev, priceMax: price, saved: true }));
+          }}
           width={88}
         />,
         <Text size="small" tone="tertiary">
@@ -1761,7 +1878,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       <Stack gap={6}>
         <H1>{st.name} land retreat: retirement cash plan</H1>
         <Text tone="secondary">
-          Household of {who}, age {ageNowFrom(p)}, retiring at {startAge(p)} in {p.startYear}, living in an RV on {EST.acres} acres with a water source in {st.region}. Costs
+          Household of {who}, age {ageNowFrom(p)}, retiring at {startAge(p)} in {p.startYear}, living in an RV on {est.acres} acres
+          in {st.name}
+          {linked.saved ? `, the same place Land search is using (${linked.counties})` : ""}. Land is budgeted at {money(land)}
+          {linked.saved ? `, the Land search maximum` : ""}. Costs
           marked "per person" scale with the household size in Assumptions. Every number with a box is editable, and
           the charts recompute as you type. Taxes use 2026 federal brackets plus {st.name} state tax (
           {st.taxNote})
@@ -1914,10 +2034,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                   const budget = rec.hoa ?? 0;
                   if (dues === budget) {
                     return dues > 0
-                      ? `${money(dues)}/yr is included in monthly costs as HOA or road dues.`
+                      ? `${money(dues)}/yr is included in monthly costs as HOA or road dues. Editing either amount updates the other.`
                       : "No dues are included in the monthly costs.";
                   }
-                  return `Land search shows ${money(dues)}/yr. Monthly costs still have ${money(budget)}/yr. Use in plan again to copy the dues.`;
+                  return `Land search shows ${money(dues)}/yr. Monthly costs still have ${money(budget)}/yr.`;
                 })()}
               </Text>
             </Stack>
@@ -1938,8 +2058,19 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                 />
               </Field>
               <Field label="Acres you're buying">
-                <NumField value={est.acres} onChange={(n) => setEst("acres", n)} width={72} />
+                <NumField value={est.acres} onChange={setAcres} width={72} />
               </Field>
+              <div className="span-2">
+                <Text size="small" tone="tertiary">
+                  Land search is {linked.acresMin}–{linked.acresMax} acres
+                  {linked.saved ? ` in ${linked.counties}` : ""}, maximum {money(linked.priceMax)}.
+                  {linked.saved
+                    ? " That maximum is the land line in setup costs."
+                    : " The land line still has its own amount until you set one of them."}{" "}
+                  Moving these acres outside the range widens Land search, and tightening the range there moves this
+                  number back inside it.
+                </Text>
+              </div>
               <Field label="Adults in household">
                 <NumField
                   value={adults}
@@ -2277,8 +2408,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           Democrats had a strong night on November 3. They flipped governorships in Texas, Georgia, Iowa, Ohio, Nevada
           and Alaska, and Kansas was still leaning Democratic as of November 4. The states below are ones where
           Republicans still hold the governor's office and both legislative chambers. Each row reruns your current
-          plan (household, 401(k), withdrawal method, build level) using that state's land price, state income tax,
-          winter heating, property tax and game. Click a state name to load it into the planner.
+          plan using that state's income tax, winter heating, property tax and game. The land column uses that
+          state's typical price per acre, except the state you have selected, which uses your land budget. Click a
+          state name to load its tax, heat and game. The land budget stays what you set, and Land search switches to
+          that state.
         </Text>
         <Table
           headers={["State", `${EST.acres} ac land`, "State tax on lump sum", `Heating/yr (${HEAT[heat].label.toLowerCase()})`, "Living cost/yr", "Money lasts to", "Winter low", "Growing season", "Rain", "Medicaid expansion"]}
@@ -2561,9 +2694,9 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         </Row>
         <Text tone="secondary">
           These are the rough figures the planner fills in for you. Change any of them to match a quote, a listing or
-          what you pay locally. Your edits are saved. Editing one updates the matching line in the plan for{" "}
-          {st.name} (for example, land price per acre rewrites the land cost), so re-enter a listing price afterward
-          if you'd loaded one. Edits for other states show up in the state comparison and apply when you switch.
+          what you pay locally. Your edits are saved. Editing {st.name}'s land price per acre rewrites the land cost
+          and the Land search maximum. Changing the acreage does not. That maximum is the land line until you edit
+          either one. Edits for other states show up in the state comparison and apply when you switch.
         </Text>
         <Grid columns={2} gap={20} align="start">
           <Card>
@@ -2571,7 +2704,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             <CardBody>
               <Grid columns={2} gap={10}>
                 <Field label="Acres you're buying">
-                  <NumField value={est.acres} onChange={(n) => setEst("acres", n)} width={72} />
+                  <NumField value={est.acres} onChange={setAcres} width={72} />
                 </Field>
                 <Field label="Propane, $/gal">
                   <NumField value={est.propanePrice} onChange={(n) => setEst("propanePrice", n)} width={72} />
@@ -2733,7 +2866,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         <H1>Self-reliance: food, water and staying alive</H1>
         <Text tone="secondary">
           Chickens, a garden, hunting, the well, and what still works if the bills stop. Turning something off here
-          takes it out of the retirement plan too. The dollar boxes are the same ones as on that tab.
+          takes it out of the retirement plan too. The dollar boxes are the same ones as on that tab. This page is
+          planning {est.acres} acres in {st.name} with a land budget of {money(land)}
+          {linked.saved ? `, which is the Land search maximum of ${money(linked.priceMax)}` : ""}. Changing the state,
+          acreage, or land cost on either of the other pages changes those figures here.
         </Text>
       </Stack>
 

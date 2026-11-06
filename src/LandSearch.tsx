@@ -19,7 +19,7 @@ import {
   Toggle,
   useCanvasState,
 } from "./ui";
-import { STATES, STATE_IDS, type StateId } from "./App";
+import { applyLinkedState, publishLandSearch, STATES, STATE_IDS, type StateId } from "./App";
 import { checkWater, fmtDist, miles, M_PER_MILE, parseLatLon, propertyRadiusM, runChecks, type CheckResult, type WaterFeature } from "./geo";
 import { LandMap } from "./LandMap";
 import { openExternal } from "./net";
@@ -35,6 +35,7 @@ import {
   type UseAnswer,
   type UseKey,
 } from "./restrictions";
+import { clampAcresToRange, DEFAULT_COUNTIES, readPlanAcres, syncHoaFromListing, writeLandCost } from "./planLink";
 
 type PropType = "any" | "hunting" | "recreational" | "farms" | "undeveloped" | "timber" | "waterfront";
 
@@ -49,17 +50,17 @@ const PROP_TYPES: Record<PropType, { label: string; lw: string; lc: string }> = 
 };
 
 const STATE_META: Record<StateId, { code: string; counties: string; view: [number, number, number] }> = {
-  OK: { code: "OK", counties: "Pushmataha, Latimer, Le Flore, McCurtain, Pittsburg", view: [34.5, -95.2, 8] },
-  MT: { code: "MT", counties: "Fergus, Judith Basin, Meagher", view: [47.0, -109.8, 7] },
-  WY: { code: "WY", counties: "Big Horn, Park, Washakie, Hot Springs", view: [44.3, -108.3, 7] },
-  ID: { code: "ID", counties: "Boundary, Bonner, Benewah", view: [48.0, -116.6, 8] },
-  SD: { code: "SD", counties: "Butte, Perkins, Harding, Meade", view: [45.0, -103.0, 7] },
-  ND: { code: "ND", counties: "McKenzie, Dunn, Mercer", view: [47.5, -102.6, 7] },
-  TN: { code: "TN", counties: "Cumberland, Van Buren, Grundy, Bledsoe", view: [35.7, -85.2, 8] },
-  AR: { code: "AR", counties: "Polk, Montgomery, Newton, Searcy", view: [35.0, -93.4, 7] },
-  MO: { code: "MO", counties: "Shannon, Texas, Howell, Douglas", view: [37.1, -91.9, 8] },
-  WV: { code: "WV", counties: "Webster, Nicholas, Pocahontas", view: [38.4, -80.5, 8] },
-  MS: { code: "MS", counties: "Winston, Choctaw, Attala", view: [33.1, -89.3, 8] },
+  OK: { code: "OK", counties: DEFAULT_COUNTIES.OK, view: [34.5, -95.2, 8] },
+  MT: { code: "MT", counties: DEFAULT_COUNTIES.MT, view: [47.0, -109.8, 7] },
+  WY: { code: "WY", counties: DEFAULT_COUNTIES.WY, view: [44.3, -108.3, 7] },
+  ID: { code: "ID", counties: DEFAULT_COUNTIES.ID, view: [48.0, -116.6, 8] },
+  SD: { code: "SD", counties: DEFAULT_COUNTIES.SD, view: [45.0, -103.0, 7] },
+  ND: { code: "ND", counties: DEFAULT_COUNTIES.ND, view: [47.5, -102.6, 7] },
+  TN: { code: "TN", counties: DEFAULT_COUNTIES.TN, view: [35.7, -85.2, 8] },
+  AR: { code: "AR", counties: DEFAULT_COUNTIES.AR, view: [35.0, -93.4, 7] },
+  MO: { code: "MO", counties: DEFAULT_COUNTIES.MO, view: [37.1, -91.9, 8] },
+  WV: { code: "WV", counties: DEFAULT_COUNTIES.WV, view: [38.4, -80.5, 8] },
+  MS: { code: "MS", counties: DEFAULT_COUNTIES.MS, view: [33.1, -89.3, 8] },
 };
 
 type Criteria = {
@@ -360,6 +361,7 @@ export default function LandSearch({
   const [storedC, setC] = useCanvasState<Criteria>("land-criteria-v1", DEFAULT_CRITERIA);
   const c: Criteria = { ...DEFAULT_CRITERIA, ...storedC };
   const [listings, setListings] = useCanvasState<Listing[]>("land-listings-v1", []);
+  const [planAcres, setPlanAcres] = useState(() => readPlanAcres());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState("");
@@ -367,6 +369,10 @@ export default function LandSearch({
   const [waterById, setWaterById] = useState<Record<string, WaterFeature[]>>({});
 
   const set = <K extends keyof Criteria>(k: K, v: Criteria[K]) => setC((prev) => ({ ...DEFAULT_CRITERIA, ...prev, [k]: v }));
+  useEffect(() => {
+    publishLandSearch();
+    setPlanAcres(readPlanAcres());
+  }, []);
   const pending = parseLatLon(form.where);
   const counties = c.counties.split(",").map((s) => s.trim()).filter(Boolean);
   const selected = listings.find((l) => l.id === selectedId) ?? null;
@@ -425,7 +431,14 @@ export default function LandSearch({
   };
 
   const setDeed = (id: string, patch: Partial<DeedLimits>) => {
-    setListings((prev) => prev.map((x) => (x.id === id ? { ...x, deed: { ...deedOf(x.deed), ...patch } } : x)));
+    setListings((prev) =>
+      prev.map((x) => {
+        if (x.id !== id) return x;
+        const deed = { ...deedOf(x.deed), ...patch };
+        syncHoaFromListing(id, deed);
+        return { ...x, deed };
+      }),
+    );
   };
 
   const planState = (l: Listing): StateId | null =>
@@ -462,7 +475,11 @@ export default function LandSearch({
               <Field label="State">
                 <Select
                   value={c.state}
-                  onChange={(v) => setC((prev) => ({ ...DEFAULT_CRITERIA, ...prev, state: v as StateId, counties: STATE_META[v as StateId].counties }))}
+                  onChange={(v) => {
+                    const id = v as StateId;
+                    setC((prev) => ({ ...DEFAULT_CRITERIA, ...prev, state: id, counties: STATE_META[id].counties }));
+                    applyLinkedState(id);
+                  }}
                   options={STATE_IDS.map((id) => ({ value: id, label: STATES[id].name }))}
                 />
               </Field>
@@ -476,14 +493,39 @@ export default function LandSearch({
                 <Select value={c.type} onChange={(v) => set("type", v as PropType)} options={(Object.keys(PROP_TYPES) as PropType[]).map((k) => ({ value: k, label: PROP_TYPES[k].label }))} />
               </Field>
               <Field label="Acres, minimum">
-                <Num value={c.acresMin} onChange={(n) => set("acresMin", n)} width={70} />
+                <Num
+                  value={c.acresMin}
+                  onChange={(n) => {
+                    set("acresMin", n);
+                    setPlanAcres(clampAcresToRange(n, c.acresMax));
+                  }}
+                  width={70}
+                />
               </Field>
               <Field label="Acres, maximum">
-                <Num value={c.acresMax} onChange={(n) => set("acresMax", n)} width={70} />
+                <Num
+                  value={c.acresMax}
+                  onChange={(n) => {
+                    set("acresMax", n);
+                    setPlanAcres(clampAcresToRange(c.acresMin, n));
+                  }}
+                  width={70}
+                />
               </Field>
               <Field label="Price, maximum">
-                <Num value={c.priceMax} onChange={(n) => set("priceMax", n)} />
+                <Num
+                  value={c.priceMax}
+                  onChange={(n) => {
+                    set("priceMax", n);
+                    writeLandCost(n);
+                  }}
+                />
               </Field>
+              <Text size="small" tone="tertiary">
+                The retirement plan and the self-reliance page use {STATES[c.state].name}, {planAcres} acres, and{" "}
+                {money(c.priceMax)} as the land cost. Changing the state, this range, or this maximum updates those pages.
+                A listing you load with Use in plan replaces the acreage and the land cost with that parcel.
+              </Text>
               <Divider />
               <Field label="Water on the land">
                 <Toggle checked={c.waterOnLand} onChange={(v) => set("waterOnLand", v)} />
@@ -516,7 +558,16 @@ export default function LandSearch({
                 <Toggle checked={c.usesAllowed} onChange={(v) => set("usesAllowed", v)} />
               </Field>
               <Divider />
-              <Pill onClick={() => setC(DEFAULT_CRITERIA)}>Reset criteria</Pill>
+              <Pill
+                onClick={() => {
+                  setC(DEFAULT_CRITERIA);
+                  applyLinkedState(DEFAULT_CRITERIA.state);
+                  writeLandCost(DEFAULT_CRITERIA.priceMax);
+                  setPlanAcres(clampAcresToRange(DEFAULT_CRITERIA.acresMin, DEFAULT_CRITERIA.acresMax));
+                }}
+              >
+                Reset criteria
+              </Pill>
             </Stack>
           </CardBody>
         </Card>
