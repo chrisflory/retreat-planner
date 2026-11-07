@@ -84,6 +84,13 @@ export function bannedUses(d: DeedLimits): string[] {
   return USE_ITEMS.filter((i) => d[i.key] === "banned").map((i) => i.label);
 }
 
+/** House plans are not blocked by an RV ban. RV plans still are. Minimum size stays on both. */
+export function usesForPlan(housing: "rv" | "house") {
+  const items = housing === "house" ? USE_ITEMS.filter((i) => i.key !== "rv") : USE_ITEMS;
+  if (housing !== "house") return items;
+  return [...items.filter((i) => i.key === "minHouse"), ...items.filter((i) => i.key !== "minHouse")];
+}
+
 const clerkSlug = (county: string) => county.replace(/ county$/i, "").toLowerCase().replace(/[^a-z]/g, "");
 
 export function recordLinks(county: string | undefined, stateCode: string | undefined): { site: string; url: string }[] {

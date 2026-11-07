@@ -35,11 +35,10 @@ import {
   type LinkedLand,
 } from "./planLink";
 import {
-  bannedUses,
   deedOf,
   recordLinks,
   resolveChosen,
-  USE_ITEMS,
+  usesForPlan,
   type ChosenLand,
   type ListingDeedSource,
 } from "./restrictions";
@@ -68,7 +67,10 @@ type Params = {
   ssPia?: number;
   otherIncome: number;
   otherUntil: number;
+  /** Yearly growth on the 401(k) while it is still in the account. */
   ret: number;
+  /** Yearly interest on cash after a lump or split withdrawal, and on other savings. Missing means 0. */
+  cashReturn?: number;
   inflation: number;
   contingency: number;
   acaUnsub: number;
@@ -680,6 +682,7 @@ const DEFAULT_PARAMS: Params = {
   otherIncome: 0,
   otherUntil: 62,
   ret: 4,
+  cashReturn: 0,
   inflation: 3,
   contingency: 10,
   acaUnsub: 11000,
@@ -766,10 +769,11 @@ type Group = "core" | "hardening" | "hunting" | "food";
 
 function homeCounted(u: { id: string }, p: { housing?: Housing }): boolean {
   const house = housingOf(p) === "house";
-  if (u.id === "rv") return !house;
-  if (u.id === "house") return house;
+  if (u.id === "rv" || u.id === "rvhookup") return !house;
+  if (u.id === "houseShell" || u.id === "houseStove" || u.id === "houseWire") return house;
   // The house is the winter home. The cabin line is the RV plan's backup room.
-  if (house && (u.id === "winter" || u.id === "cabin")) return false;
+  // The house stove line replaces the RV wood-stove line so it is not counted twice.
+  if (house && (u.id === "winter" || u.id === "cabin" || u.id === "woodheat")) return false;
   return true;
 }
 
@@ -822,7 +826,9 @@ const UPFRONT: UpfrontItem[] = [
   { id: "land", label: "Land, 50 acres", note: "Same amount as the Land search maximum. A listing loaded with Use in plan replaces it. Editing the state's $/acre under Estimates also rewrites it.", hardening: false },
   { id: "winter", label: "Year-round insulated shelter", note: "Required where winters reach −20°F; an RV alone won't survive it", hardening: false },
   { id: "rv", label: "Used RV", note: "Look for a 4-season unit; it lives outdoors through ice storms and 100°F summers", hardening: false },
-  { id: "house", label: "Small house / shelter", note: "Insulated one-room shelter with a door, a wood stove, and wiring for the power setup in Assumptions. Well, septic, and the co-op line or solar are their own lines. Replace this with a builder's quote. A permanent dwelling can qualify for a homestead credit. You still need a septic permit, and a covenant can ban the house or set a minimum size even where the county has no zoning.", hardening: false },
+  { id: "houseShell", label: "House shell", note: "Insulated one-room structure, a door, and a simple foundation. Not the well, the septic, the stove, or the power equipment. Replace this with a builder's quote. A permanent dwelling can qualify for a homestead credit. You still need a septic permit, and a covenant can ban the house or set a minimum size even where the county has no zoning.", hardening: false },
+  { id: "houseStove", label: "Wood stove in the house", note: "Wood stove, insulated chimney, hearth pad, and a splitting maul. This replaces the separate wood-stove line so the stove is not counted twice. Yearly firewood stays under monthly costs.", hardening: false },
+  { id: "houseWire", label: "House wiring", note: "Electrical rough-in and a panel for the power setup in Assumptions. The co-op line, the solar bank, and the generator are their own lines.", hardening: false },
   { id: "closing", label: "Closing, survey, title", note: "Rural tracts often need a new survey", hardening: false },
   { id: "well", label: "Drilled well + pump", note: "~150–300 ft; Oklahoma drillers run ~$30–50/ft installed", hardening: false },
   { id: "septic", label: "Septic + permit", note: "Aerobic systems are common on Oklahoma clay soils", hardening: false },
@@ -858,7 +864,7 @@ const UPFRONT: UpfrontItem[] = [
 ];
 
 const PRESET_PLANNED: Record<string, number> = {
-  land: 75000, winter: 0, rv: 40000, house: 45000, closing: 3000, well: 15000, septic: 9000, power: 10000,
+  land: 75000, winter: 0, rv: 40000, houseShell: 32000, houseStove: 5000, houseWire: 8000, closing: 3000, well: 15000, septic: 9000, power: 10000,
   rvhookup: 2500, starlink: 500, generator: 1200, pad: 5000,
   barn: 10000, shelter: 5000, safety: 1200, propane: 3500, woodheat: 0, tractor: 10000, fence: 5000,
   handpump: 3000, offgrid: 15000, cabin: 15000, food: 3000, garden: 800, coop: 2200, plot: 1600, rain: 3000,
@@ -867,7 +873,7 @@ const PRESET_PLANNED: Record<string, number> = {
 };
 
 const PRESET_LEAN: Record<string, number> = {
-  land: 75000, winter: 0, rv: 30000, house: 30000, closing: 2500, well: 12000, septic: 7000, power: 6000,
+  land: 75000, winter: 0, rv: 30000, houseShell: 20000, houseStove: 4000, houseWire: 6000, closing: 2500, well: 12000, septic: 7000, power: 6000,
   rvhookup: 1500, starlink: 400, generator: 800, pad: 3000,
   barn: 0, shelter: 4000, safety: 800, propane: 3000, woodheat: 0, tractor: 5000, fence: 0,
   handpump: 2500, offgrid: 8000, cabin: 6000, food: 2000, garden: 400, coop: 1100, plot: 700, rain: 1500,
@@ -1051,14 +1057,15 @@ function linkAges(prev: Partial<Params>, which: "now" | "retire" | "year", n: nu
 
 function nestEgg(p: Params) {
   const years = yearsToRetire(p);
-  const r = (p.ret ?? 0) / 100;
+  const r401 = (p.ret ?? 0) / 100;
+  const rCash = (p.cashReturn ?? 0) / 100;
   let k401 = Math.max(0, p.k401);
   let savings = Math.max(0, p.savings ?? 0);
   const contrib = Math.max(0, p.jobContrib ?? 0);
   const save = Math.max(0, p.jobSave ?? 0);
   for (let i = 0; i < years; i++) {
-    k401 = k401 * (1 + r) + contrib;
-    savings = savings * (1 + r) + save;
+    k401 = k401 * (1 + r401) + contrib;
+    savings = savings * (1 + rCash) + save;
   }
   return { years, k401, savings, contrib, save };
 }
@@ -1173,7 +1180,8 @@ function simulate(
   adjust?: SimAdjust,
 ): SimResult {
   const loan = loanTerms(p, land);
-  const r = p.ret / 100;
+  const r401 = (p.ret ?? 0) / 100;
+  const rCash = (p.cashReturn ?? 0) / 100;
   const inf = inflationPct / 100;
   const cliff = acaCliff(p);
   const egg = nestEgg(p);
@@ -1209,12 +1217,12 @@ function simulate(
     const extra = (t === 0 ? upfront - loan.financed : 0) + (t < loan.years ? loan.payment : 0);
 
     if (isLump(p)) {
-      const unsub = t === 0 || (t === 1 && p.strategy === "split") || balance * r > cliff;
+      const unsub = t === 0 || (t === 1 && p.strategy === "split") || balance * rCash > cliff;
       const living = annualCost(rec, age, p, unsub) * f;
       const cost = living - Math.min(living, Math.max(0, adjust?.spendCut ?? 0) * f);
       if (t === 0) year0Cost = cost;
       const after = balance - (cost - income + extra);
-      balance = after > 0 ? after * (1 + r) : after;
+      balance = after > 0 ? after * (1 + rCash) : after;
     } else {
       const inTexas = t === 0 && p.txMove;
       const plan = (unsub: boolean) => {
@@ -1236,8 +1244,8 @@ function simulate(
       cash -= s.fromCash;
       if (s.gross < 0) cash += -s.gross;
       const after = balance - (balance > 0 ? s.w : Math.max(0, s.need));
-      balance = after > 0 ? after * (1 + r) : after;
-      cash *= 1 + r;
+      balance = after > 0 ? after * (1 + r401) : after;
+      cash *= 1 + rCash;
     }
     const total = balance + cash;
     if (total <= 0 && depletedAge === null) depletedAge = age;
@@ -1339,10 +1347,12 @@ const TIPS: Record<string, string> = {
     "Any age from 62 to 70. 62 pays 70% of the full benefit when full retirement age is 67, 65 pays about 86.7%, 67 pays 100%, and 70 pays 124%. The monthly amount updates when you change this.",
   "Part-time income, $/yr": "Any work income after you retire, counted until the age below.",
   "Part-time work until age": "The last age the part-time income is counted.",
-  "Return on savings, %":
-    "Yearly growth on money still invested, before inflation. 4% is a conservative stock-and-bond mix.",
+  "401(k) growth while working, %":
+    "Yearly growth on the 401(k) until you withdraw it, and on money that stays in the 401(k) when withdrawals are As needed. 4% is a conservative stock-and-bond mix. This does not grow the cash left after you take the money out.",
+  "Interest on cash after withdrawal, %":
+    "Yearly interest on cash after an All at once or Split withdrawal, and on other savings. Leave this at 0 if the money sits in checking. It is separate from 401(k) growth.",
   Home:
-    "Used RV keeps the trailer as the house. Small house / shelter replaces it with a one-room building and drops the RV, the RV replacement fund, and the backup cabin. Power stays on the Power setup line.",
+    "Used RV keeps the trailer as the house. Small house / shelter replaces it with a shell, a wood stove, and wiring, and drops the RV, the RV pedestal, the RV replacement fund, and the backup cabin. Well, septic, and power stay on their own lines.",
   "Inflation, %": "How fast living costs rise each year. Social Security rises with it (COLA).",
   "Contingency on costs, %":
     "A cushion added on top of all yearly living costs for surprises. Set it to 0 if your numbers already include one.",
@@ -1708,8 +1718,6 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     return item.label;
   };
   const upNote = (u: UpfrontItem) => {
-    if (u.id === "house")
-      return "One-room insulated shelter with wiring for the power setup in Assumptions. Well, septic, and grid or solar are separate lines. Put a real builder's quote here. A covenant can ban it or set a minimum size even where the county has no zoning.";
     if (u.id === "offgrid") return POWER[p.powerMode]?.solarNote ?? u.note;
     if (u.id === "well") return loc.well;
     if (u.id === "septic") return loc.septic;
@@ -1774,7 +1782,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const offset = meatOffset(rec, p);
   const land = up.land ?? 0;
   const loan = loanTerms(p, land);
-  const homeCost = housingOf(p) === "house" ? (up.house ?? 0) : (up.rv ?? 0);
+  const homeCost =
+    housingOf(p) === "house" ? (up.houseShell ?? 0) + (up.houseStove ?? 0) + (up.houseWire ?? 0) : (up.rv ?? 0);
   const landRv = land - loan.financed + homeCost;
 
   const normal = simulate(p, rec, upfrontTotal, p.inflation, null, land);
@@ -1808,8 +1817,38 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const steadyPost65 = annualCost(rec, 66, p, false);
   const ssAnnual = p.ssMonthly * 12;
 
+  const nowAge = ageNowFrom(p);
+  const retireAt = startAge(p);
+  const planUses = usesForPlan(housingOf(p));
   const ages: string[] = [];
-  for (let a = startAge(p); a <= END_AGE; a++) ages.push(String(a));
+  for (let a = nowAge; a <= END_AGE; a++) ages.push(String(a));
+  const beforeWithdrawals: (number | null)[] = [];
+  {
+    const r401 = (p.ret ?? 0) / 100;
+    const rCash = (p.cashReturn ?? 0) / 100;
+    let k401 = Math.max(0, p.k401);
+    let savingsNow = Math.max(0, p.savings ?? 0);
+    const contrib = Math.max(0, p.jobContrib ?? 0);
+    const save = Math.max(0, p.jobSave ?? 0);
+    for (let age = nowAge; age <= END_AGE; age++) {
+      if (age < retireAt) {
+        beforeWithdrawals.push(Math.round(k401 + savingsNow));
+        k401 = k401 * (1 + r401) + contrib;
+        savingsNow = savingsNow * (1 + rCash) + save;
+      } else if (age === retireAt) {
+        beforeWithdrawals.push(Math.round(egg.k401 + egg.savings));
+      } else {
+        beforeWithdrawals.push(null);
+      }
+    }
+  }
+  const afterLine = (sim: SimResult): (number | null)[] =>
+    ages.map((_, i) => {
+      const age = nowAge + i;
+      if (age < retireAt) return null;
+      const v = sim.balances[age - retireAt];
+      return v == null ? null : Math.round(v);
+    });
 
   const lastsLabel = (r: SimResult) => (r.depletedAge === null ? `${END_AGE}+` : String(r.depletedAge));
   const goal = goalOf(p);
@@ -1972,7 +2011,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             : `${egg.years} years of pay before retirement, ${THIS_YEAR} through ${p.startYear - 1}.`}{" "}
           Nothing is withdrawn until then. The 401(k) goes from {money(p.k401)} today to{" "}
           {money(egg.k401)}, with {money(egg.contrib)} a year contributed and {p.ret}% growth. Other savings go from{" "}
-          {money(p.savings ?? 0)} to {money(egg.savings)}, with {money(egg.save)} a year saved from wages.{" "}
+          {money(p.savings ?? 0)} to {money(egg.savings)}, with {money(egg.save)} a year saved and {p.cashReturn ?? 0}% interest.{" "}
           {(p.jobPay ?? 0) > 0 && egg.contrib + egg.save > (p.jobPay ?? 0)
             ? `Contributions plus savings add up to more than the ${money(p.jobPay)} wage.`
             : "The rest of the paycheck is your cost of living now and is not in the plan."}{" "}
@@ -1985,7 +2024,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           value={kMoney(netAfterTax)}
           label={`${isLump(p) ? "Cash after lump-sum tax" : "Kept in 401(k)/IRA"}${savings > 0 ? `, incl. ${kMoney(savings)} savings` : ""}`}
         />
-        <Stat value={kMoney(upfrontTotal)} label="One-time setup (land, RV, build-out)" />
+        <Stat value={kMoney(upfrontTotal)} label={`One-time setup (land, ${housingOf(p) === "house" ? "house" : "RV"}, build-out)`} />
         <Stat value={kMoney(leftAfterSetup)} label={isLump(p) ? "Left after setup, before living costs" : "Left in account after year 1"} tone={leftAfterSetup < 100000 ? "warning" : undefined} />
         <Stat value={`${money(steadyPre65 / 12)}/mo`} label={`Living cost before 65 (${money(steadyPre65)}/yr), today's dollars`} />
       </Grid>
@@ -2034,18 +2073,32 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               </Text>
               <Table
                 headers={["What the plan needs", "On this land"]}
-                rowTone={USE_ITEMS.map((item) =>
+                rowTone={planUses.map((item) =>
                   chosen.deed[item.key] === "banned" ? "danger" : chosen.deed[item.key] === "allowed" ? "success" : "neutral",
                 )}
-                rows={USE_ITEMS.map((item) => [
-                  item.label,
+                rows={planUses.map((item) => [
+                  item.key === "minHouse" && housingOf(p) === "house"
+                    ? "The shelter meets any minimum house size"
+                    : item.label,
                   chosen.deed[item.key] === "banned" ? "Banned" : chosen.deed[item.key] === "allowed" ? "Allowed" : "Unknown",
                 ])}
               />
-              {bannedUses(chosen.deed).length > 0 && (
+              <Text size="small" tone="secondary">
+                {housingOf(p) === "house"
+                  ? "This plan is a small house, so an RV ban does not block it. A minimum house size does."
+                  : "This plan uses an RV, so an RV ban blocks it. A minimum house size can too if the RV is too small."}
+              </Text>
+              {planUses.some((item) => chosen.deed[item.key] === "banned") && (
                 <Callout tone="warning" title="A recorded rule blocks part of this plan">
-                  {bannedUses(chosen.deed).join(". ")}. Those uses are part of the retirement plan. Confirm the clause
-                  in the declaration before you count on this parcel.
+                  {planUses
+                    .filter((item) => chosen.deed[item.key] === "banned")
+                    .map((item) =>
+                      item.key === "minHouse" && housingOf(p) === "house"
+                        ? "The shelter meets any minimum house size"
+                        : item.label,
+                    )
+                    .join(". ")}
+                  . Confirm the clause in the declaration before you count on this parcel.
                 </Callout>
               )}
               {chosen.deed.notes.trim() && (
@@ -2229,8 +2282,11 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                 <Toggle checked={p.ssCut} onChange={(v) => set("ssCut", v)} />
               </Field>
               <Divider />
-              <Field label="Return on savings, %">
+              <Field label="401(k) growth while working, %">
                 <NumField value={p.ret} onChange={(n) => set("ret", n)} width={64} />
+              </Field>
+              <Field label="Interest on cash after withdrawal, %">
+                <NumField value={p.cashReturn ?? 0} onChange={(n) => set("cashReturn", n)} width={64} />
               </Field>
               <Field label="Inflation, %">
                 <NumField value={p.inflation} onChange={(n) => set("inflation", n)} width={64} />
@@ -2329,25 +2385,26 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           <LineChart
             categories={ages}
             series={[
-              { name: `Normal economy (${p.inflation}% inflation)${p.ssCut ? ", Social Security cut" : ""}`, data: normal.balances.map(Math.round), tone: "info" },
+              { name: "401(k) before the withdrawals", data: beforeWithdrawals, tone: "success" },
+              { name: `Normal economy (${p.inflation}% inflation)${p.ssCut ? ", Social Security cut" : ""}`, data: afterLine(normal), tone: "info" },
               ...(p.ssCut
                 ? []
-                : [{ name: `Social Security cut to ${EST.ssCutPct}% in ${EST.ssCutYear}`, data: ssCutSim.balances.map(Math.round), tone: "danger" as const }]),
-              { name: `High inflation (${EST.highInflation}%)`, data: highInf.balances.map(Math.round), tone: "warning" },
-              { name: `Collapse at ${p.collapseAge} (cash frozen, useless)`, data: collapse.balances.map(Math.round), tone: "neutral" },
+                : [{ name: `Social Security cut to ${EST.ssCutPct}% in ${EST.ssCutYear}`, data: afterLine(ssCutSim), tone: "danger" as const }]),
+              { name: `High inflation (${EST.highInflation}%)`, data: afterLine(highInf), tone: "warning" },
+              { name: `Collapse at ${p.collapseAge} (cash frozen, useless)`, data: afterLine(collapse), tone: "neutral" },
             ]}
             valuePrefix="$"
             fluid
             yFloor={-100_000}
           />
           <Text size="small" tone="tertiary">
-            X-axis: age. Y-axis: {isLump(p) ? "cash on hand after tax" : "pre-tax 401(k)/IRA balance"}
-            {savings > 0 ? " plus other savings" : ""}, in
-            nominal dollars. Below $0 is the running shortfall: money you'd have to find somewhere else. The
-            scale stops at -$100,000, and a deeper shortfall runs off the bottom. Point at a year to see the real
-            balance. Model:
-            spending inflates yearly, Social Security gets matching COLAs, savings earn the return rate. Tax on
-            interest is ignored.
+            X-axis: age, from today through {END_AGE}. Until retirement the green line is the 401(k)
+            {savings > 0 ? " plus other savings" : ""}. Wages are not on the chart. At the retirement age that line
+            stops on the balance before tax, and the other lines start on what is left after tax, the land and setup,
+            and the first year of costs. After that, All at once and Split are cash in the bank. As needed is what is
+            still in the 401(k). The 401(k) grows at {p.ret}%. Cash earns {p.cashReturn ?? 0}% interest, and stays flat
+            when that is 0. Tax on interest is ignored. Below $0 is the running shortfall. The scale stops at
+            -$100,000, and a deeper shortfall runs off the bottom.
           </Text>
           <Grid columns={4} gap={12}>
             <Stat value={lastsLabel(normal)} label="Normal: money lasts to age" tone={shortfall ? "danger" : "success"} />

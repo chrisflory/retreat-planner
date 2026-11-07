@@ -371,7 +371,7 @@ export function UsageBar({
   );
 }
 
-type Series = { name: string; data: number[]; tone?: Tone };
+type Series = { name: string; data: (number | null)[]; tone?: Tone };
 
 const seriesColor = (s: Series, i: number) => (s.tone ? TONE_COLOR[s.tone] : colorVar(CHART_SEQUENCE[i % CHART_SEQUENCE.length]));
 
@@ -394,8 +394,11 @@ const tooltipStyle = {
 
 function toRows(categories: string[], series: Series[]) {
   return categories.map((cat, i) => {
-    const row: Record<string, string | number> = { cat };
-    for (const s of series) row[s.name] = s.data[i] ?? 0;
+    const row: Record<string, string | number | null> = { cat };
+    for (const s of series) {
+      const v = s.data[i];
+      row[s.name] = v == null || !Number.isFinite(v) ? null : v;
+    }
     return row;
   });
 }
@@ -418,7 +421,7 @@ export function LineChart({
   fluid?: boolean;
 }) {
   const fmt = compact(valuePrefix);
-  const values = series.flatMap((s) => s.data).filter((n) => Number.isFinite(n));
+  const values = series.flatMap((s) => s.data).filter((n): n is number => n != null && Number.isFinite(n));
   const lowest = values.length ? Math.min(...values) : 0;
   const highest = values.length ? Math.max(...values) : 0;
   const yMin = yFloor === undefined ? undefined : Math.max(Math.min(lowest, 0), yFloor);
@@ -442,7 +445,7 @@ export function LineChart({
           {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
           <ReferenceLine y={0} stroke="var(--text-tertiary)" strokeDasharray="4 4" />
           {series.map((s, i) => (
-            <Line key={s.name} type="monotone" dataKey={s.name} stroke={seriesColor(s, i)} strokeWidth={2} dot={false} isAnimationActive={false} />
+            <Line key={s.name} type="monotone" dataKey={s.name} stroke={seriesColor(s, i)} strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} />
           ))}
         </RLineChart>
       </ResponsiveContainer>
