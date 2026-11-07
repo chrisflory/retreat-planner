@@ -410,6 +410,7 @@ export function LineChart({
   height = 260,
   yFloor,
   fluid,
+  drop,
 }: {
   categories?: string[];
   series?: Series[];
@@ -419,6 +420,8 @@ export function LineChart({
   yFloor?: number;
   /** Grow the plot with the window instead of using a fixed height. */
   fluid?: boolean;
+  /** Dotted vertical segment at one age, from the higher balance down to the lower one. */
+  drop?: { x: string; from: number; to: number };
 }) {
   const fmt = compact(valuePrefix);
   const values = series.flatMap((s) => s.data).filter((n): n is number => n != null && Number.isFinite(n));
@@ -444,6 +447,17 @@ export function LineChart({
           <Tooltip {...tooltipStyle} formatter={(v) => fmt(Number(v))} labelFormatter={(l) => `Age ${l}`} />
           {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
           <ReferenceLine y={0} stroke="var(--text-tertiary)" strokeDasharray="4 4" />
+          {drop && drop.from !== drop.to && (
+            <ReferenceLine
+              segment={[
+                { x: drop.x, y: drop.from },
+                { x: drop.x, y: drop.to },
+              ]}
+              stroke="var(--text-secondary)"
+              strokeDasharray="2 3"
+              strokeWidth={1.5}
+            />
+          )}
           {series.map((s, i) => (
             <Line key={s.name} type="monotone" dataKey={s.name} stroke={seriesColor(s, i)} strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} />
           ))}

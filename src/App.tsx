@@ -1849,6 +1849,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       const v = sim.balances[age - retireAt];
       return v == null ? null : Math.round(v);
     });
+  const nestAtRetirement = beforeWithdrawals[retireAt - nowAge];
+  const cashAtRetirement = afterLine(normal)[retireAt - nowAge];
 
   const lastsLabel = (r: SimResult) => (r.depletedAge === null ? `${END_AGE}+` : String(r.depletedAge));
   const goal = goalOf(p);
@@ -2396,12 +2398,17 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             valuePrefix="$"
             fluid
             yFloor={-100_000}
+            drop={
+              nestAtRetirement != null && cashAtRetirement != null
+                ? { x: String(retireAt), from: nestAtRetirement, to: cashAtRetirement }
+                : undefined
+            }
           />
           <Text size="small" tone="tertiary">
             X-axis: age, from today through {END_AGE}. Until retirement the green line is the 401(k)
-            {savings > 0 ? " plus other savings" : ""}. Wages are not on the chart. At the retirement age that line
-            stops on the balance before tax, and the other lines start on what is left after tax, the land and setup,
-            and the first year of costs. After that, All at once and Split are cash in the bank. As needed is what is
+            {savings > 0 ? " plus other savings" : ""}. Wages are not on the chart. The dotted line at retirement is
+            the drop from that balance, before tax, down to what is left after tax, the land and setup, and the first
+            year of costs. After that, All at once and Split are cash in the bank. As needed is what is
             still in the 401(k). The 401(k) grows at {p.ret}%. Cash earns {p.cashReturn ?? 0}% interest, and stays flat
             when that is 0. Tax on interest is ignored. Below $0 is the running shortfall. The scale stops at
             -$100,000, and a deeper shortfall runs off the bottom.
