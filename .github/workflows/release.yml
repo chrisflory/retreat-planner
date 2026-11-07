@@ -14,7 +14,8 @@ jobs:
           - os: ubuntu-22.04
             bundles: deb,rpm,appimage
           - os: windows-latest
-            bundles: nsis,msi
+            # MSI rejects a version like 2.0.0+beta.2. The release ships the NSIS setup and the portable exe.
+            bundles: nsis
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
