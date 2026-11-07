@@ -48,6 +48,7 @@ type Status = "mfj" | "single";
 type Strategy = "lump" | "split" | "asNeeded";
 type PowerMode = "grid" | "hybrid" | "offgrid" | "offgridAC";
 type HeatMode = "propane" | "both" | "wood";
+type Housing = "rv" | "house";
 
 const isLump = (p: { strategy: Strategy }) => p.strategy !== "asNeeded";
 
@@ -96,6 +97,8 @@ type Params = {
   loanYears: number;
   powerMode: PowerMode;
   heat: HeatMode;
+  /** rv keeps the used-RV plan. house replaces it with a small shelter. Missing means rv. */
+  housing?: Housing;
 };
 
 type StateId = "OK" | "MT" | "WY" | "ID" | "SD" | "ND" | "TN" | "AR" | "MO" | "WV" | "MS";
@@ -705,6 +708,7 @@ const DEFAULT_PARAMS: Params = {
   loanYears: 15,
   powerMode: "grid",
   heat: "propane",
+  housing: "rv",
 };
 
 const POWER: Record<
@@ -737,6 +741,7 @@ const POWER: Record<
   },
 };
 const POWER_IDS = Object.keys(POWER) as PowerMode[];
+const housingOf = (p: { housing?: Housing }): Housing => (p.housing === "house" ? "house" : "rv");
 
 const EGGS_PER_HEN = 200;
 const chickenUpkeep = (hens: number) => Math.round(Math.max(0, hens) * (350 / 6));
@@ -759,6 +764,15 @@ const acaCliff = (p: Params) => 4 * (15650 + 5500 * (adultsOf(p) - 1));
 
 type Group = "core" | "hardening" | "hunting" | "food";
 
+function homeCounted(u: { id: string }, p: { housing?: Housing }): boolean {
+  const house = housingOf(p) === "house";
+  if (u.id === "rv") return !house;
+  if (u.id === "house") return house;
+  // The house is the winter home. The cabin line is the RV plan's backup room.
+  if (house && (u.id === "winter" || u.id === "cabin")) return false;
+  return true;
+}
+
 function groupOf(u: UpfrontItem, p: Params): Group {
   if (u.food) return "food";
   if (u.hunting) return "hunting";
@@ -778,6 +792,7 @@ function upfrontTotalFor(p: Params, up: Record<string, number>): number {
     if (g === "hunting" && !p.hunting) return s;
     if (g === "hardening" && !p.hardening) return s;
     if (g === "food" && !foodCounted(u, p)) return s;
+    if (!homeCounted(u, p)) return s;
     return s + upAmount(up, u.id, p);
   }, 0);
 }
@@ -807,6 +822,7 @@ const UPFRONT: UpfrontItem[] = [
   { id: "land", label: "Land, 50 acres", note: "Same amount as the Land search maximum. A listing loaded with Use in plan replaces it. Editing the state's $/acre under Estimates also rewrites it.", hardening: false },
   { id: "winter", label: "Year-round insulated shelter", note: "Required where winters reach −20°F; an RV alone won't survive it", hardening: false },
   { id: "rv", label: "Used RV", note: "Look for a 4-season unit; it lives outdoors through ice storms and 100°F summers", hardening: false },
+  { id: "house", label: "Small house / shelter", note: "Insulated one-room shelter with a door, a wood stove, and wiring for the power setup in Assumptions. Well, septic, and the co-op line or solar are their own lines. Replace this with a builder's quote. A permanent dwelling can qualify for a homestead credit. You still need a septic permit, and a covenant can ban the house or set a minimum size even where the county has no zoning.", hardening: false },
   { id: "closing", label: "Closing, survey, title", note: "Rural tracts often need a new survey", hardening: false },
   { id: "well", label: "Drilled well + pump", note: "~150–300 ft; Oklahoma drillers run ~$30–50/ft installed", hardening: false },
   { id: "septic", label: "Septic + permit", note: "Aerobic systems are common on Oklahoma clay soils", hardening: false },
@@ -842,7 +858,7 @@ const UPFRONT: UpfrontItem[] = [
 ];
 
 const PRESET_PLANNED: Record<string, number> = {
-  land: 75000, winter: 0, rv: 40000, closing: 3000, well: 15000, septic: 9000, power: 10000,
+  land: 75000, winter: 0, rv: 40000, house: 45000, closing: 3000, well: 15000, septic: 9000, power: 10000,
   rvhookup: 2500, starlink: 500, generator: 1200, pad: 5000,
   barn: 10000, shelter: 5000, safety: 1200, propane: 3500, woodheat: 0, tractor: 10000, fence: 5000,
   handpump: 3000, offgrid: 15000, cabin: 15000, food: 3000, garden: 800, coop: 2200, plot: 1600, rain: 3000,
@@ -851,7 +867,7 @@ const PRESET_PLANNED: Record<string, number> = {
 };
 
 const PRESET_LEAN: Record<string, number> = {
-  land: 75000, winter: 0, rv: 30000, closing: 2500, well: 12000, septic: 7000, power: 6000,
+  land: 75000, winter: 0, rv: 30000, house: 30000, closing: 2500, well: 12000, septic: 7000, power: 6000,
   rvhookup: 1500, starlink: 400, generator: 800, pad: 3000,
   barn: 0, shelter: 4000, safety: 800, propane: 3000, woodheat: 0, tractor: 5000, fence: 0,
   handpump: 2500, offgrid: 8000, cabin: 6000, food: 2000, garden: 400, coop: 1100, plot: 700, rain: 1500,
@@ -1095,6 +1111,7 @@ function annualCost(
     if (item.rule === "pre65" && age >= 65) continue;
     if (item.rule === "post65" && age < 65) continue;
     if (item.id === "hunt" && !p.hunting) continue;
+    if (item.id === "rvreserve" && housingOf(p) === "house") continue;
     sum +=
       item.id === "aca" && unsubsidizedHealth ? p.acaUnsub * adultsOf(p) : recAmount(rec, item.id, p);
   }
@@ -1324,6 +1341,8 @@ const TIPS: Record<string, string> = {
   "Part-time work until age": "The last age the part-time income is counted.",
   "Return on savings, %":
     "Yearly growth on money still invested, before inflation. 4% is a conservative stock-and-bond mix.",
+  Home:
+    "Used RV keeps the trailer as the house. Small house / shelter replaces it with a one-room building and drops the RV, the RV replacement fund, and the backup cabin. Power stays on the Power setup line.",
   "Inflation, %": "How fast living costs rise each year. Social Security rises with it (COLA).",
   "Contingency on costs, %":
     "A cushion added on top of all yearly living costs for surprises. Set it to 0 if your numbers already include one.",
@@ -1336,7 +1355,7 @@ const TIPS: Record<string, string> = {
   "Heat with":
     "Propane, a wood stove with propane backup, or wood only. Wood is far cheaper if you cut it yourself, but it's real work.",
   "Include collapse-hardening build":
-    "Adds the grid-down items: hand pump, solar, cabin and wood stove, food storage, garden, rain catchment, medical and radios.",
+    "Adds the grid-down items: hand pump, solar, food storage, rain catchment, medical and radios. With an RV it also adds the backup cabin. A small house already takes the place of that cabin.",
   "Hunt for meat": "Counts hunting gear costs and subtracts the meat you take from the grocery bill.",
   "Chickens for eggs":
     "Adds a coop and a fenced run, yearly feed, and the eggs those hens replace at the grocery store. Turn it off if you won't lock them up every night.",
@@ -1677,7 +1696,9 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const flockSize = !p.chickens ? "off" : (p.hens ?? 6) >= 10 ? "large" : "small";
   const recLabel = (item: RecurringItem) => {
     if (item.id === "propane")
-      return `Propane (~${hp.propaneGal.toLocaleString("en-US")} gal/yr at $${EST.propanePrice.toFixed(2)}: ${heat === "propane" ? "RV furnace, cooking, hot water" : heat === "both" ? "cooking, hot water, cold-snap backup" : "cooking, hot water, fridge"})`;
+      return `Propane (~${hp.propaneGal.toLocaleString("en-US")} gal/yr at $${EST.propanePrice.toFixed(2)}: ${heat === "propane" && housingOf(p) === "rv" ? "RV furnace, cooking, hot water" : heat === "both" ? "cooking, hot water, cold-snap backup" : heat === "wood" ? "cooking, hot water, fridge" : "furnace, cooking, hot water"})`;
+    if (item.id === "rvins" && housingOf(p) === "house") return "Dwelling insurance (the small house)";
+    if (item.id === "maint" && housingOf(p) === "house") return "House, tractor, equipment repairs";
     if (item.id === "firewood")
       return loc.ownWood
         ? `Firewood (~${hp.cords} cords/yr cut from your land: saw gas, chains, bar oil)`
@@ -1687,6 +1708,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     return item.label;
   };
   const upNote = (u: UpfrontItem) => {
+    if (u.id === "house")
+      return "One-room insulated shelter with wiring for the power setup in Assumptions. Well, septic, and grid or solar are separate lines. Put a real builder's quote here. A covenant can ban it or set a minimum size even where the county has no zoning.";
     if (u.id === "offgrid") return POWER[p.powerMode]?.solarNote ?? u.note;
     if (u.id === "well") return loc.well;
     if (u.id === "septic") return loc.septic;
@@ -1734,13 +1757,13 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   });
 
   const groupTotal = (g: Group) =>
-    UPFRONT.filter((u) => groupOf(u, p) === g).reduce((s, u) => s + upAmount(up, u.id, p), 0);
+    UPFRONT.filter((u) => groupOf(u, p) === g && homeCounted(u, p)).reduce((s, u) => s + upAmount(up, u.id, p), 0);
   const adults = adultsOf(p);
   const who = peopleLabel(adults);
   const coreTotal = groupTotal("core");
   const hardTotal = groupTotal("hardening");
   const huntTotal = groupTotal("hunting");
-  const foodSetup = UPFRONT.filter((u) => groupOf(u, p) === "food" && foodCounted(u, p)).reduce(
+  const foodSetup = UPFRONT.filter((u) => groupOf(u, p) === "food" && foodCounted(u, p) && homeCounted(u, p)).reduce(
     (s, u) => s + upAmount(up, u.id, p),
     0,
   );
@@ -1751,7 +1774,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const offset = meatOffset(rec, p);
   const land = up.land ?? 0;
   const loan = loanTerms(p, land);
-  const landRv = land - loan.financed + (up.rv ?? 0);
+  const homeCost = housingOf(p) === "house" ? (up.house ?? 0) : (up.rv ?? 0);
+  const landRv = land - loan.financed + homeCost;
 
   const normal = simulate(p, rec, upfrontTotal, p.inflation, null, land);
   const highInf = simulate(p, rec, upfrontTotal, EST.highInflation, null, land);
@@ -1804,7 +1828,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const GOAL_AGES = [70, 75, 80, 85, 90, 95];
 
   const allocTaxes = normal.year0Tax;
-  const allocOther = coreTotal - land - (up.rv ?? 0);
+  const allocOther = coreTotal - land - homeCost;
   const allocHard = p.hardening ? hardTotal : 0;
   const allocHunt = p.hunting ? huntTotal : 0;
   const allocFood = foodSetup;
@@ -1815,7 +1839,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     (id !== "firewood" || heat !== "propane" || (rec.firewood ?? 0) > 0) &&
     (id !== "hunt" || p.hunting) &&
     (id !== "chickens" || p.chickens) &&
-    (id !== "garden" || p.garden);
+    (id !== "garden" || p.garden) &&
+    (id !== "rvreserve" || housingOf(p) === "rv");
   const shownRecurring = RECURRING.filter((i) => showRec(i.id));
   const costRows = shownRecurring.map((item) => [
     REC_TIPS[item.id] ? (
@@ -1842,7 +1867,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   ]);
 
   const chartItems = RECURRING.filter((i) => i.rule !== "post65" && showRec(i.id))
-    .map((i) => ({ label: i.label.split(" (")[0], value: recAmount(rec, i.id, p) }))
+    .map((i) => ({ label: (i.id === "rvins" && housingOf(p) === "house" ? "Dwelling insurance" : i.label).split(" (")[0], value: recAmount(rec, i.id, p) }))
     .sort((a, b) => b.value - a.value)
     .slice(0, 8);
 
@@ -1850,7 +1875,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     <Table
       headers={["Item", "Cost", "Why"]}
       columnAlign={["left", "right", "left"]}
-      rows={UPFRONT.filter((u) => groupOf(u, p) === group).map((u) => [
+      rows={UPFRONT.filter((u) => groupOf(u, p) === group && homeCounted(u, p)).map((u) => [
         u.id === "land" ? `Land, ${est.acres} acres` : u.label,
         <NumField
           key={u.id}
@@ -1878,7 +1903,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       <Stack gap={6}>
         <H1>{st.name} land retreat: retirement cash plan</H1>
         <Text tone="secondary">
-          Household of {who}, age {ageNowFrom(p)}, retiring at {startAge(p)} in {p.startYear}, living in an RV on {est.acres} acres
+          Household of {who}, age {ageNowFrom(p)}, retiring at {startAge(p)} in {p.startYear}, living in {housingOf(p) === "house" ? "a small house" : "an RV"} on {est.acres} acres
           in {st.name}
           {linked.saved ? `, the same place Land search is using (${linked.counties})` : ""}. Land is budgeted at {money(land)}
           {linked.saved ? `, the Land search maximum` : ""}. Costs
@@ -1892,7 +1917,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
 
       <Callout tone={shortfall ? "danger" : "success"} title={`Normal economy: money lasts to age ${lastsLabel(normal)}`}>
         {p.strategy === "lump"
-          ? `Taking the full ${money(egg.k401)} in one year costs about ${money(normal.year0Tax)} in tax, which is more than the RV. `
+          ? `Taking the full ${money(egg.k401)} in one year costs about ${money(normal.year0Tax)} in tax, which is more than the ${housingOf(p) === "house" ? "house" : "RV"}. `
           : p.strategy === "split"
           ? `Splitting the ${money(egg.k401)} across two tax years (December and January) costs about ${money(normal.year0Tax)} in tax. `
           : `Withdrawing as needed, year one still costs about ${money(normal.year0Tax)} in tax because the setup spending lands in that year. `}
@@ -2219,6 +2244,16 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Field label="Collapse happens at age">
                 <NumField value={p.collapseAge} onChange={(n) => set("collapseAge", n)} width={64} />
               </Field>
+              <Field label="Home">
+                <Select
+                  value={housingOf(p)}
+                  onChange={(v) => set("housing", v as Housing)}
+                  options={[
+                    { value: "rv", label: "Used RV" },
+                    { value: "house", label: "Small house / shelter" },
+                  ]}
+                />
+              </Field>
               <Field label="Power setup">
                 <Select
                   value={p.powerMode}
@@ -2505,7 +2540,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           {(
             [
               ["red", `Taxes${rule55Applies(p) || startAge(p) >= 60 ? "" : " + 10% penalty"}: ${money(allocTaxes)}`],
-              ["blue", `Land + RV: ${money(landRv)}`],
+              ["blue", `${housingOf(p) === "house" ? "Land + house" : "Land + RV"}: ${money(landRv)}`],
               ["cyan", `Making it livable: ${money(allocOther)}`],
               ["purple", `Collapse hardening: ${money(allocHard)}`],
               ["orange", `Hunting + processing gear: ${money(allocHunt)}`],
@@ -2874,11 +2909,11 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       </Stack>
 
       <Stack gap={12}>
-        <H2>Water for the RV: refilling, drinking and showers</H2>
+        <H2>{housingOf(p) === "house" ? "Water for the house" : "Water for the RV: refilling, drinking and showers"}</H2>
         <Text tone="secondary">
-          An RV fresh-water tank holds 40–100 gallons. With short showers, {who} uses about{" "}
-          {adults === 1 ? "10–20" : `${10 * adults}–${20 * adults}`} gallons a day, so a full tank lasts about 3–7 days
-          when you're not hooked up. The goal is to plumb the RV to the well so you never haul water.
+          {housingOf(p) === "house"
+            ? "The house connects to the well and a permitted septic. Filter drinking water at the sink, and test the well for coliform and nitrates when it is drilled and every year after. Rain catchment stays the backup. The steps below are for an RV, if you switch Home back to Used RV."
+            : `An RV fresh-water tank holds 40–100 gallons. With short showers, ${who} uses about ${adults === 1 ? "10–20" : `${10 * adults}–${20 * adults}`} gallons a day, so a full tank lasts about 3–7 days when you're not hooked up. The goal is to plumb the RV to the well so you never haul water.`}
         </Text>
         <Table
           headers={["Method", "How", "Cost", "When to use it"]}
@@ -3304,7 +3339,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             </Callout>
           </Stack>
         </Grid>
-        <H3>How each hazard hits an RV homestead, and how to prepare</H3>
+        <H3>{housingOf(p) === "house" ? "How each hazard hits a small house, and how to prepare" : "How each hazard hits an RV homestead, and how to prepare"}</H3>
         <Table
           headers={["Hazard", "What it does", "Preparation", "Rough cost"]}
           columnAlign={["left", "left", "left", "right"]}
@@ -3323,6 +3358,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           Row markers show {st.name}'s rating: red is severe, yellow is high. The safety kit ($1,200) and satellite
           SOS subscription ($200/yr) are now in the setup and yearly costs. Most other prep is covered by items
           already budgeted: the storm shelter, pole barn, tractor, well, rain catchment and northern-winter shelter.
+          {housingOf(p) === "house" ? " The rows below were written for an RV. A small house does better against hail, cold, and wind. Tornadoes and flood still apply." : ""}
         </Text>
       </Stack>
       </>
@@ -3353,8 +3389,15 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           </Stack>
           <Stack gap={8}>
             <Text>
-              <Text weight="semibold">Living in an RV.</Text> {loc.rvLiving}. {loc.septic}. Buy a four-season unit and
-              plan to have the pole barn or cabin take over as the real shelter within 5–10 years.
+              {housingOf(p) === "house" ? (
+                <>
+                  <Text weight="semibold">Living in a small house.</Text> {loc.rvLiving}. {loc.septic}. The house is wired for the power setup in Assumptions. A permanent dwelling can qualify for a homestead credit. Check the deed for a minimum house size.
+                </>
+              ) : (
+                <>
+                  <Text weight="semibold">Living in an RV.</Text> {loc.rvLiving}. {loc.septic}. Buy a four-season unit and plan to have the pole barn or cabin take over as the real shelter within 5–10 years.
+                </>
+              )}
             </Text>
             <Text>
               <Text weight="semibold">Property tax.</Text> {loc.propertyTax}.
