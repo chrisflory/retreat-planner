@@ -1,5 +1,6 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { version as pkgVersion } from "../package.json";
 import App, { loadListingIntoPlan } from "./App";
 import type { Listing } from "./LandSearch";
 import LandSearch from "./LandSearch";
@@ -14,6 +15,24 @@ const THEMES: { id: ThemeMode; label: string }[] = [
   { id: "light", label: "Light" },
   { id: "dark", label: "Dark" },
 ];
+
+function VersionMark() {
+  const [version, setVersion] = useState(pkgVersion);
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    import("@tauri-apps/api/app")
+      .then(({ getVersion }) => getVersion())
+      .then((v) => {
+        if (v) setVersion(v);
+      })
+      .catch(() => {});
+  }, []);
+  return (
+    <Text size="small" tone="tertiary">
+      v{version}
+    </Text>
+  );
+}
 
 function Root() {
   const [tab, setTab] = useCanvasState<Tab>("tab", "plan");
@@ -31,6 +50,7 @@ function Root() {
           Land search
         </Pill>
         <div style={{ flex: 1 }} />
+        <VersionMark />
         <Text size="small" tone="tertiary">
           Theme
         </Text>
