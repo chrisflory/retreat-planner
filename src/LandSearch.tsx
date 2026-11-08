@@ -121,6 +121,27 @@ export type Listing = {
 const slug = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const money = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
 
+/** Houses and manufactured homes on the acre range. Zillow's plain house search ignores lot size. */
+function zillowHouseOnLand(place: string, acresMin: number, acresMax: number, priceMax: number) {
+  const filterState: Record<string, unknown> = {
+    sortSelection: { value: "lot" },
+    isSingleFamily: { value: true },
+    isManufactured: { value: true },
+    isCondo: { value: false },
+    isTownhouse: { value: false },
+    isMultiFamily: { value: false },
+    isApartment: { value: false },
+    isLotLand: { value: false },
+  };
+  const lot: { min?: number; max?: number; units: "acre" } = { units: "acre" };
+  if (acresMin > 0) lot.min = acresMin;
+  if (acresMax > 0) lot.max = acresMax;
+  if (lot.min != null || lot.max != null) filterState.lotSize = lot;
+  if (priceMax > 0) filterState.price = { max: priceMax };
+  const state = { pagination: {}, isMapVisible: true, isListVisible: true, filterState };
+  return `https://www.zillow.com/${place}/?searchQueryState=${encodeURIComponent(JSON.stringify(state))}`;
+}
+
 function searchLinks(c: Criteria, county: string | null) {
   const st = STATES[c.state];
   const code = STATE_META[c.state].code;
@@ -133,17 +154,18 @@ function searchLinks(c: Criteria, county: string | null) {
   const countySeg = county ? `/${slug(county)}-county` : "";
   const where = county ? `"${county} County" ${code}` : st.name;
   const lwKind = c.withHouse ? "homes" : t.lw;
-  const zillowKind = c.withHouse ? "houses" : "land";
   const typeWords = c.type === "any" ? "" : `${t.label.toLowerCase()} `;
+  const acres = lo > 0 || hi > 0 ? `${lo}-${hi} acres ` : "";
   const google = c.withHouse
-    ? `${where} ${typeWords}house for sale ${lo}-${hi} acres creek OR pond`
+    ? `${where} ${acres}with a house OR cabin OR manufactured home ${typeWords}creek OR pond`
     : `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
-  const zillowBase = county
-    ? `https://www.zillow.com/${slug(county)}-county-${code.toLowerCase()}/${zillowKind}/`
-    : `https://www.zillow.com/${code.toLowerCase()}/${zillowKind}/`;
+  const place = county ? `${slug(county)}-county-${code.toLowerCase()}` : code.toLowerCase();
+  const zillow = c.withHouse
+    ? zillowHouseOnLand(place, lo, hi, Math.max(0, Math.round(c.priceMax)))
+    : `https://www.zillow.com/${place}/land/`;
   return [
     { site: "LandWatch", url: `https://www.landwatch.com/${slug(st.name)}-${lwKind}-for-sale${countySeg}${lwPrice}${lwAcres}` },
-    { site: c.withHouse ? "Zillow (houses)" : "Zillow (land)", url: zillowBase },
+    { site: c.withHouse ? "Zillow (acres + house)" : "Zillow (land)", url: zillow },
     { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
   ];
 }
@@ -501,8 +523,8 @@ export default function LandSearch({
               </Field>
               <Text size="small" tone="tertiary">
                 {c.withHouse
-                  ? "LandWatch opens its homes search and Zillow opens houses, still on your county, acres, and price. The property type is included in the Google search. Zillow still needs its own acre and price filters."
-                  : "Off searches vacant land. Turn this on to look for acreage that already has a house."}
+                  ? "The land comes first. Zillow opens single-family and manufactured homes on your acre range and under your price, largest lots first. A cabin or shack is usually listed as one of those. Condos and townhouses are left out. LandWatch's homes search keeps the same county, acres, and price."
+                  : "Off searches vacant land. Turn this on for acreage that already has a house, cabin, or manufactured home."}
               </Text>
               <Field label="Acres, minimum">
                 <Num
@@ -590,7 +612,11 @@ export default function LandSearch({
             LandWatch opens in your usual browser on the county, {c.withHouse ? "homes" : "property type"}, {c.acresMin}–
             {c.acresMax} acres{c.priceMax > 0 ? `, and under ${money(c.priceMax)}` : ""}. Land.com and Lands of America
             answer this computer with Access Denied on every page, including a single listing, in Chrome as well as
-            Brave. Those buttons are gone. Zillow opens in Chrome and needs its own acres and price filters. Save the
+            Brave. Those buttons are gone.{" "}
+            {c.withHouse
+              ? "Zillow opens in Chrome already limited to that acre range and price."
+              : "Zillow's land search opens in Chrome and still needs its own acres and price filters."}{" "}
+            Save the
             search on the site to get new listings by email.
           </Text>
           <Table headers={["Where", "Open search"]} rows={linkRows} />
