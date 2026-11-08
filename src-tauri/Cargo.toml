@@ -1,6 +1,6 @@
 [package]
 name = "retreat-planner"
-version = "2.0.0+beta.7"
+version = "2.0.0+beta.8"
 description = "Retirement survival-retreat cash and hazard planner"
 edition = "2021"
 
@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-http = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-window-state = "2"
 
 [profile.release]
 codegen-units = 1
