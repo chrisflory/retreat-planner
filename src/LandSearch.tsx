@@ -121,21 +121,23 @@ export type Listing = {
 const slug = (s: string) => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const money = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
 
-/** Houses and manufactured homes on the acre range. Zillow's plain house search ignores lot size. */
+const SQFT_PER_ACRE = 43560;
+
+/** Land first, then a house or manufactured home on that acreage. Lot size is square feet, which is what Zillow applies. */
 function zillowHouseOnLand(place: string, acresMin: number, acresMax: number, priceMax: number) {
   const filterState: Record<string, unknown> = {
     sortSelection: { value: "lot" },
+    isLotLand: { value: true },
     isSingleFamily: { value: true },
     isManufactured: { value: true },
     isCondo: { value: false },
     isTownhouse: { value: false },
     isMultiFamily: { value: false },
     isApartment: { value: false },
-    isLotLand: { value: false },
   };
-  const lot: { min?: number; max?: number; units: "acre" } = { units: "acre" };
-  if (acresMin > 0) lot.min = acresMin;
-  if (acresMax > 0) lot.max = acresMax;
+  const lot: { min?: number; max?: number } = {};
+  if (acresMin > 0) lot.min = acresMin * SQFT_PER_ACRE;
+  if (acresMax > 0) lot.max = acresMax * SQFT_PER_ACRE;
   if (lot.min != null || lot.max != null) filterState.lotSize = lot;
   if (priceMax > 0) filterState.price = { max: priceMax };
   const state = { pagination: {}, isMapVisible: true, isListVisible: true, filterState };
@@ -165,7 +167,7 @@ function searchLinks(c: Criteria, county: string | null) {
     : `https://www.zillow.com/${place}/land/`;
   return [
     { site: "LandWatch", url: `https://www.landwatch.com/${slug(st.name)}-${lwKind}-for-sale${countySeg}${lwPrice}${lwAcres}` },
-    { site: c.withHouse ? "Zillow (acres + house)" : "Zillow (land)", url: zillow },
+    { site: c.withHouse ? "Zillow (land + house)" : "Zillow (land)", url: zillow },
     { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
   ];
 }
@@ -523,7 +525,7 @@ export default function LandSearch({
               </Field>
               <Text size="small" tone="tertiary">
                 {c.withHouse
-                  ? "The land comes first. Zillow opens single-family and manufactured homes on your acre range and under your price, largest lots first. A cabin or shack is usually listed as one of those. Condos and townhouses are left out. LandWatch's homes search keeps the same county, acres, and price."
+                  ? "The land comes first. Zillow checks Lots/Land, Houses, and Manufactured, on your acre range and under your price, largest lots first. A cabin can be filed as land or as a house, so both are included. Condos and townhouses are left out. LandWatch's homes search keeps the same county, acres, and price."
                   : "Off searches vacant land. Turn this on for acreage that already has a house, cabin, or manufactured home."}
               </Text>
               <Field label="Acres, minimum">
