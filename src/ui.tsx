@@ -381,6 +381,37 @@ const compact = (prefix: string) => (v: number) => {
   return `${v < 0 ? "-" : ""}${prefix}${body}`;
 };
 
+/** A round step, such as 100, 200, 250, 500, or 1,000, near `rough`. */
+function niceStep(rough: number) {
+  const safe = Math.max(rough, 1);
+  const exp = 10 ** Math.floor(Math.log10(safe));
+  const f = safe / exp;
+  const nice = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+  return nice * exp;
+}
+
+/**
+ * Domain that always has a labeled tick above the highest point.
+ * `yFloor` is still the lowest the axis will show.
+ */
+function axisScale(lowest: number, highest: number, yFloor: number) {
+  const yMin = Math.max(Math.min(lowest, 0), yFloor);
+  const top = Math.max(highest, 0);
+  const span = Math.max(top - yMin, 1);
+  const step = niceStep(span / 5);
+  let yMax = Math.ceil(Math.max(top, 1) / step) * step;
+  if (yMax - top < step * 0.12) yMax += step;
+  const ticks: number[] = [];
+  if (yMin < -step * 0.01) ticks.push(yMin);
+  for (let i = 0; i < 24; i++) {
+    const v = Math.round(step * i);
+    if (v > yMax + step * 0.001) break;
+    if (v >= yMin - step * 0.001) ticks.push(v);
+  }
+  if (ticks[ticks.length - 1] !== yMax) ticks.push(yMax);
+  return { yMin, yMax, ticks };
+}
+
 const tooltipStyle = {
   contentStyle: {
     background: "var(--bg-elevated)",
@@ -427,22 +458,22 @@ export function LineChart({
   const values = series.flatMap((s) => s.data).filter((n): n is number => n != null && Number.isFinite(n));
   const lowest = values.length ? Math.min(...values) : 0;
   const highest = values.length ? Math.max(...values) : 0;
-  const yMin = yFloor === undefined ? undefined : Math.max(Math.min(lowest, 0), yFloor);
-  const span = Math.max(highest - (yMin ?? 0), 1);
-  const yMax = yMin === undefined ? undefined : Math.max(highest, 0) + span * 0.03;
+  const scaled = yFloor === undefined ? undefined : axisScale(lowest, highest, yFloor);
   return (
     <div className={fluid ? "chart-plot" : undefined} style={{ width: "100%", height: fluid ? undefined : height }}>
       <ResponsiveContainer>
-        <RLineChart data={toRows(categories, series)} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+        <RLineChart data={toRows(categories, series)} margin={{ top: 16, right: 16, bottom: 0, left: 4 }}>
           <CartesianGrid stroke="var(--stroke)" vertical={false} />
           <XAxis dataKey="cat" tick={{ fill: "var(--text-tertiary)", fontSize: 11 }} stroke="var(--stroke)" interval="preserveStartEnd" />
           <YAxis
             tickFormatter={fmt}
             tick={{ fill: "var(--text-tertiary)", fontSize: 11 }}
             stroke="var(--stroke)"
-            width={60}
-            domain={yMin === undefined || yMax === undefined ? undefined : [yMin, yMax]}
-            allowDataOverflow={yMin !== undefined}
+            width={68}
+            domain={scaled ? [scaled.yMin, scaled.yMax] : undefined}
+            ticks={scaled?.ticks}
+            allowDataOverflow={scaled !== undefined}
+            interval={0}
           />
           <Tooltip {...tooltipStyle} formatter={(v) => fmt(Number(v))} labelFormatter={(l) => `Age ${l}`} />
           {series.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
