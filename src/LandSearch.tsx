@@ -99,6 +99,11 @@ type ZillowOpts = {
   comingSoon: boolean;
   foreclosure: boolean;
   auction: boolean;
+  /** 0 means Any. */
+  beds: number;
+  bedsExact: boolean;
+  /** 0 means Any. Halves are allowed, matching Zillow. */
+  baths: number;
 };
 
 const DEFAULT_ZILLOW: ZillowOpts = {
@@ -115,9 +120,30 @@ const DEFAULT_ZILLOW: ZillowOpts = {
   comingSoon: true,
   foreclosure: true,
   auction: false,
+  beds: 0,
+  bedsExact: false,
+  baths: 0,
 };
 
-const ZILLOW_HOME: { key: keyof ZillowOpts; label: string; filter: string }[] = [
+const BED_OPTIONS = [
+  { value: "0", label: "Any" },
+  { value: "1", label: "1+" },
+  { value: "2", label: "2+" },
+  { value: "3", label: "3+" },
+  { value: "4", label: "4+" },
+  { value: "5", label: "5+" },
+];
+
+const BATH_OPTIONS = [
+  { value: "0", label: "Any" },
+  { value: "1", label: "1+" },
+  { value: "1.5", label: "1.5+" },
+  { value: "2", label: "2+" },
+  { value: "3", label: "3+" },
+  { value: "4", label: "4+" },
+];
+
+const ZILLOW_HOME: { key: Exclude<keyof ZillowOpts, "beds" | "baths">; label: string; filter: string }[] = [
   { key: "houses", label: "Houses", filter: "isSingleFamily" },
   { key: "townhomes", label: "Townhomes", filter: "isTownhouse" },
   { key: "multiFamily", label: "Multi-family", filter: "isMultiFamily" },
@@ -127,7 +153,7 @@ const ZILLOW_HOME: { key: keyof ZillowOpts; label: string; filter: string }[] = 
   { key: "manufactured", label: "Manufactured", filter: "isManufactured" },
 ];
 
-const ZILLOW_LISTING: { key: keyof ZillowOpts; label: string; filter: string }[] = [
+const ZILLOW_LISTING: { key: Exclude<keyof ZillowOpts, "beds" | "baths">; label: string; filter: string }[] = [
   { key: "byAgent", label: "For sale by agent", filter: "isForSaleByAgent" },
   { key: "byOwner", label: "For sale by owner", filter: "isForSaleByOwner" },
   { key: "newConstruction", label: "New construction", filter: "isNewConstruction" },
@@ -194,6 +220,8 @@ const SQFT_PER_ACRE = 43560;
 function zillowSearch(place: string, acresMin: number, acresMax: number, priceMax: number, z: ZillowOpts) {
   const filterState: Record<string, unknown> = { sortSelection: { value: "lot" } };
   for (const opt of [...ZILLOW_HOME, ...ZILLOW_LISTING]) filterState[opt.filter] = { value: z[opt.key] };
+  if (z.beds > 0) filterState.beds = z.bedsExact ? { min: z.beds, max: z.beds } : { min: z.beds };
+  if (z.baths > 0) filterState.baths = { min: z.baths };
   const lot: { min?: number; max?: number } = {};
   if (acresMin > 0) lot.min = acresMin * SQFT_PER_ACRE;
   if (acresMax > 0) lot.max = acresMax * SQFT_PER_ACRE;
@@ -464,7 +492,7 @@ export default function LandSearch({
   const [waterById, setWaterById] = useState<Record<string, WaterFeature[]>>({});
 
   const set = <K extends keyof Criteria>(k: K, v: Criteria[K]) => setC((prev) => ({ ...normalizeCriteria(prev), [k]: v }));
-  const setZillow = (k: keyof ZillowOpts, v: boolean) =>
+  const setZillow = <K extends keyof ZillowOpts>(k: K, v: ZillowOpts[K]) =>
     setC((prev) => {
       const next = normalizeCriteria(prev);
       return { ...next, zillow: { ...next.zillow, [k]: v } };
@@ -608,9 +636,22 @@ export default function LandSearch({
                   <Toggle checked={c.zillow[opt.key]} onChange={(v) => setZillow(opt.key, v)} />
                 </Field>
               ))}
+              <Text size="small" tone="secondary">
+                Beds and baths
+              </Text>
+              <Field label="Bedrooms">
+                <Select value={String(c.zillow.beds)} onChange={(v) => setZillow("beds", Number(v))} options={BED_OPTIONS} />
+              </Field>
+              <Field label="Exact bedroom count">
+                <Toggle checked={c.zillow.bedsExact} onChange={(v) => setZillow("bedsExact", v)} />
+              </Field>
+              <Field label="Bathrooms">
+                <Select value={String(c.zillow.baths)} onChange={(v) => setZillow("baths", Number(v))} options={BATH_OPTIONS} />
+              </Field>
               <Text size="small" tone="tertiary">
                 The app sends the checked types to Zillow with your acre range and price, largest lots first. Lots/Land
-                starts on and Auction starts off.{" "}
+                starts on and Auction starts off. Bedrooms and bathrooms start at Any, so a lot with no house is kept.
+                Exact bedroom count sends that number only.{" "}
                 {wantsDwelling(c.zillow)
                   ? "A house type is on, so LandWatch opens its homes search for the same county, acres, and price."
                   : "No house type is on, so LandWatch stays on vacant land for the property type above."}{" "}

@@ -1,5 +1,5 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
   --bg: #1b1d21;
   --bg-elevated: #24272c;
   --fill: rgba(255, 255, 255, 0.06);
@@ -19,6 +19,10 @@
   --c-blue: #4f8ff7;
   --c-orange: #e8894a;
   --c-red: #e5605a;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
 }
 
 :root[data-theme="light"] {
