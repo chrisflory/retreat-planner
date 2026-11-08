@@ -1071,39 +1071,103 @@ function nestEgg(p: Params) {
 }
 const goalOf = (p: Params) => Math.min(END_AGE, Math.max(startAge(p) + 1, Math.round(p.goalAge ?? 85)));
 
-function fedTax(income: number, status: Status, age: number): number {
-  const extraStd = age >= 65 ? (status === "mfj" ? 3300 : 2050) : 0;
-  const taxable = Math.max(0, income - FED[status].std - extraStd);
+function fedTax(income: number, status: Status, age: number, factor = 1): number {
+  const extraStd = (age >= 65 ? (status === "mfj" ? 3300 : 2050) : 0) * factor;
+  const taxable = Math.max(0, income - FED[status].std * factor - extraStd);
   let tax = 0;
   let prev = 0;
   for (const [top, rate] of FED[status].brackets) {
+    const ceiling = top * factor;
     if (taxable <= prev) break;
-    tax += (Math.min(taxable, top) - prev) * rate;
-    prev = top;
+    tax += (Math.min(taxable, ceiling) - prev) * rate;
+    prev = ceiling;
   }
   return tax;
+}
+
+/** IRS Publication 915. The $25k/$34k and $32k/$44k thresholds are not indexed by law; the plan scales them with the chart line's inflation so a benefit that is untaxed on day one stays untaxed in real terms. */
+function taxableSocialSecurity(ss: number, otherIncome: number, status: Status, factor: number): number {
+  if (ss <= 0) return 0;
+  const base = (status === "mfj" ? 32000 : 25000) * factor;
+  const upper = (status === "mfj" ? 44000 : 34000) * factor;
+  const combined = otherIncome + ss * 0.5;
+  if (combined <= base) return 0;
+  const tier1 = Math.min(ss * 0.5, Math.min(upper - base, combined - base) * 0.5);
+  if (combined <= upper) return tier1;
+  return Math.min(ss * 0.85, tier1 + 0.85 * (combined - upper));
 }
 
 function stateTax(w: number, p: Params): number {
   return STATES[stateOf(p)].tax(w, p.status === "mfj", Math.max(0, w - FED[p.status].std));
 }
 
-function taxOnWithdrawal(w: number, p: Params, age: number, inTexas = false) {
-  const fed = fedTax(w, p.status, age);
-  const ok = inTexas ? 0 : stateTax(w, p);
-  const penalty = !rule55Applies(p) && age < 59.5 ? 0.1 * w : 0;
+function taxOnWithdrawal(
+  w: number,
+  p: Params,
+  age: number,
+  inTexas = false,
+  ss = 0,
+  other = 0,
+  factor = 1,
+) {
+  const ordinary = Math.max(0, w) + Math.max(0, other);
+  const fed = fedTax(
+    ordinary + taxableSocialSecurity(Math.max(0, ss), ordinary, p.status, factor),
+    p.status,
+    age,
+    factor,
+  );
+  // Scale dollar exemptions and brackets by computing the tax in retirement-year dollars.
+  const ok = inTexas || factor <= 0 ? 0 : stateTax(ordinary / factor, p) * factor;
+  const penalty = !rule55Applies(p) && age < 59.5 ? 0.1 * Math.max(0, w) : 0;
   return { fed, ok, penalty, total: fed + ok + penalty };
 }
 
-function lumpSumTax(p: Params) {
-  const parts = p.strategy === "split" ? 2 : 1;
-  const one = taxOnWithdrawal(p.k401 / parts, p, startAge(p), p.txMove);
-  return { fed: one.fed * parts, ok: one.ok * parts, penalty: one.penalty * parts, total: one.total * parts };
+function ssPay(p: Params, t: number, infPct: number): number {
+  if (startAge(p) + t < p.ssAge) return 0;
+  const f = Math.pow(1 + infPct / 100, t);
+  const cut = p.ssCut && p.startYear + t >= EST.ssCutYear ? EST.ssCutPct / 100 : 1;
+  return Math.max(0, p.ssMonthly) * 12 * f * cut;
 }
 
-function grossUp(need: number, p: Params, age: number, inTexas = false): number {
-  let w = need;
-  for (let i = 0; i < 40; i++) w = need + taxOnWithdrawal(w, p, age, inTexas).total;
+function otherPay(p: Params, t: number): number {
+  return startAge(p) + t < p.otherUntil ? Math.max(0, p.otherIncome) : 0;
+}
+
+/** Tax on a split or lump withdrawal, one slice per tax year, with that year's Social Security in the same return. */
+function lumpSumTax(p: Params, infPct = p.inflation, bonus = 0, bonusUntil = -1) {
+  const parts = p.strategy === "split" ? 2 : 1;
+  const slice = p.k401 / parts;
+  let fed = 0;
+  let ok = 0;
+  let penalty = 0;
+  for (let t = 0; t < parts; t++) {
+    const age = startAge(p) + t;
+    const factor = Math.pow(1 + infPct / 100, t);
+    const side = otherPay(p, t) + (bonus > 0 && age <= bonusUntil ? bonus : 0);
+    const one = taxOnWithdrawal(slice, p, age, p.txMove, ssPay(p, t, infPct), side, factor);
+    fed += one.fed;
+    ok += one.ok;
+    penalty += one.penalty;
+  }
+  return { fed, ok, penalty, total: fed + ok + penalty };
+}
+
+function grossUp(
+  need: number,
+  p: Params,
+  age: number,
+  inTexas: boolean,
+  ss: number,
+  other: number,
+  factor: number,
+): number {
+  const base = taxOnWithdrawal(0, p, age, inTexas, ss, other, factor).total;
+  let w = Math.max(0, need);
+  for (let i = 0; i < 40; i++) {
+    const extra = taxOnWithdrawal(w, p, age, inTexas, ss, other, factor).total - base;
+    w = Math.max(0, need + extra);
+  }
   return w;
 }
 
@@ -1197,7 +1261,12 @@ function simulate(
 
   if (isLump(p)) {
     year0Gross = egg.k401;
-    year0Tax = lumpSumTax({ ...p, k401: egg.k401 }).total;
+    year0Tax = lumpSumTax(
+      { ...p, k401: egg.k401 },
+      inflationPct,
+      adjust?.extraIncome ?? 0,
+      adjust?.incomeUntil ?? -1,
+    ).total;
     balance = egg.k401 - year0Tax + cash;
     cash = 0;
   }
@@ -1212,8 +1281,9 @@ function simulate(
     const f = Math.pow(1 + inf, t);
     const ssFactor = p.ssCut && p.startYear + t >= EST.ssCutYear ? EST.ssCutPct / 100 : 1;
     const bonus = adjust?.extraIncome && age <= (adjust.incomeUntil ?? -1) ? adjust.extraIncome : 0;
-    const income =
-      (age >= p.ssAge ? p.ssMonthly * 12 * f * ssFactor : 0) + (age < p.otherUntil ? p.otherIncome : 0) + bonus;
+    const otherOrdinary = (age < p.otherUntil ? p.otherIncome : 0) + bonus;
+    const ssCheck = (age >= p.ssAge ? p.ssMonthly * 12 * f * ssFactor : 0);
+    const income = ssCheck + otherOrdinary;
     const extra = (t === 0 ? upfront - loan.financed : 0) + (t < loan.years ? loan.payment : 0);
 
     if (isLump(p)) {
@@ -1221,28 +1291,37 @@ function simulate(
       const living = annualCost(rec, age, p, unsub) * f;
       const cost = living - Math.min(living, Math.max(0, adjust?.spendCut ?? 0) * f);
       if (t === 0) year0Cost = cost;
-      const after = balance - (cost - income + extra);
+      // Withdrawal-year tax, including that year's Social Security, is already in year0Tax.
+      const laterTax =
+        t >= (p.strategy === "split" ? 2 : 1)
+          ? taxOnWithdrawal(0, p, age, false, ssCheck, otherOrdinary, f).total
+          : 0;
+      const after = balance - (cost - income + extra + laterTax);
       balance = after > 0 ? after * (1 + rCash) : after;
     } else {
       const inTexas = t === 0 && p.txMove;
       const plan = (unsub: boolean) => {
         const living = annualCost(rec, age, p, unsub) * f;
-        const gross = living - Math.min(living, Math.max(0, adjust?.spendCut ?? 0) * f) - income + extra;
-        const fromCash = Math.min(cash, Math.max(0, gross));
-        const need = gross - fromCash;
-        const w = need > 0 && balance > 0 ? grossUp(need, p, age, inTexas) : 0;
-        return { gross, fromCash, need, w };
+        const cost = living - Math.min(living, Math.max(0, adjust?.spendCut ?? 0) * f);
+        const gap = cost - income + extra;
+        const baseTax = taxOnWithdrawal(0, p, age, inTexas, ssCheck, otherOrdinary, f).total;
+        const gapTax = gap + baseTax;
+        const fromCash = Math.min(cash, Math.max(0, gapTax));
+        const need = gapTax - fromCash;
+        const w = need > 0 && balance > 0 ? grossUp(need, p, age, inTexas, ssCheck, otherOrdinary, f) : 0;
+        const tax = taxOnWithdrawal(w, p, age, inTexas, ssCheck, otherOrdinary, f).total;
+        return { cost, gapTax, fromCash, need, w, tax };
       };
       let s = plan(false);
       if (s.w > cliff) s = plan(true);
       if (t === 0) {
         year0Gross = s.w;
-        year0Tax = s.w > 0 ? s.w - s.need : 0;
-        year0Cost = s.gross + income - extra;
+        year0Tax = s.tax;
+        year0Cost = s.cost;
         year0FromSavings = s.fromCash;
       }
       cash -= s.fromCash;
-      if (s.gross < 0) cash += -s.gross;
+      if (s.gapTax < 0) cash += -s.gapTax;
       const after = balance - (balance > 0 ? s.w : Math.max(0, s.need));
       balance = after > 0 ? after * (1 + r401) : after;
       cash *= 1 + rCash;
@@ -1814,6 +1893,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const pm = POWER[p.powerMode] ?? POWER.grid;
 
   const steadyPre65 = annualCost(rec, 60, p, false);
+  const livingAtStart = annualCost(rec, startAge(p), p, false);
   const steadyPost65 = annualCost(rec, 66, p, false);
   const ssAnnual = p.ssMonthly * 12;
 
@@ -1972,8 +2052,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           {linked.saved ? `, the Land search maximum` : ""}. Costs
           marked "per person" scale with the household size in Assumptions. Every number with a box is editable, and
           the charts recompute as you type. Taxes use 2026 federal brackets plus {st.name} state tax (
-          {st.taxNote})
-          {p.txMove ? ", except that the first year's withdrawal is taken while you're still a Texas resident" : ""}.
+          {st.taxNote}). Brackets, the standard deduction, and the Social Security thresholds rise with each chart
+          line's inflation. Federal tax includes Social Security in a year the IRS worksheet taxes it. State tax is on
+          the 401(k) withdrawal
+          {p.txMove ? ", except that the withdrawal is taken while you're still a Texas resident" : ""}.
           These are planning estimates, not tax advice. Chickens, the garden, hunting, water and the grid-down plan are on the Self-reliance tab. The switches here still change those costs.
         </Text>
       </Stack>
@@ -1984,7 +2066,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           : p.strategy === "split"
           ? `Splitting the ${money(egg.k401)} across two tax years (December and January) costs about ${money(normal.year0Tax)} in tax. `
           : `Withdrawing as needed, year one still costs about ${money(normal.year0Tax)} in tax because the setup spending lands in that year. `}
-        {`After ${money(upfrontTotal)} of land and setup, the household spends about ${money(steadyPre65)}/yr before 65`}
+        {`After ${money(upfrontTotal)} of land and setup, the household spends about ${money(livingAtStart)}/yr at age ${startAge(p)}`}
         {ssAnnual > 0
           ? `, with Social Security covering ${money(ssAnnual)}/yr starting at ${p.ssAge}.`
           : ", with no Social Security counted."}
@@ -2016,7 +2098,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Text size="small">
                 {spendCut === null
                   ? "Spending less can't fix it. Even with living costs at $0, setup and taxes spend the account in the first years. Switch Withdrawal to \"As needed\", trim the setup, or add savings."
-                  : `Spend ${money(spendCut / 12)} less per month, leaving about ${money(Math.max(0, steadyPre65 - spendCut) / 12)}/mo before 65. Both figures are today's dollars, and the cut rises with inflation.${cutCarriesFurther ? ` That same cut actually lasts to ${cutLasts}: this plan fails in the first years, and covering those covers the later ones too.` : ""}`}
+                  : `Spend ${money(spendCut / 12)} less per month, leaving about ${money(Math.max(0, livingAtStart - spendCut) / 12)}/mo at age ${startAge(p)}. Both figures are today's dollars, and the cut rises with inflation.${cutCarriesFurther ? ` That same cut actually lasts to ${cutLasts}: this plan fails in the first years, and covering those covers the later ones too.` : ""}`}
               </Text>
               <Text size="small">
                 {extraIncome === null
@@ -2050,7 +2132,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         />
         <Stat value={kMoney(upfrontTotal)} label={`One-time setup (land, ${housingOf(p) === "house" ? "house" : "RV"}, build-out)`} />
         <Stat value={kMoney(leftAfterSetup)} label={isLump(p) ? "Left after setup, before living costs" : "Left in account after year 1"} tone={leftAfterSetup < 100000 ? "warning" : undefined} />
-        <Stat value={`${money(steadyPre65 / 12)}/mo`} label={`Living cost before 65 (${money(steadyPre65)}/yr), today's dollars`} />
+        <Stat value={`${money(livingAtStart / 12)}/mo`} label={`Living cost at ${startAge(p)} (${money(livingAtStart)}/yr), today's dollars`} />
       </Grid>
 
       {chosen && (
@@ -2433,7 +2515,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             year of costs. After that, All at once and Split are cash in the bank. As needed is what is
             still in the 401(k). The 401(k) grows at {p.ret}%. Cash earns {p.cashReturn ?? 0}% interest. At 0%, interest
             adds nothing, but a surplus of Social Security over the year's costs still stacks up, and a shortage still
-            spends the pile down. Tax on interest is ignored. Below $0 is the running shortfall. The scale stops at
+            spends the pile down. Tax on interest is ignored. Federal tax includes Social Security in a year the IRS
+            worksheet taxes it, and the brackets rise with that line's inflation. Below $0 is the running shortfall. The scale stops at
             -$100,000, and a deeper shortfall runs off the bottom.
           </Text>
           <Grid columns={4} gap={12}>
@@ -2643,7 +2726,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         </Row>
         {isLump(p) && (
           <Text size="small" tone="tertiary">
-            Lump-sum tax detail: federal {money(lumpTax.fed)}, {p.txMove ? "Texas" : st.name} {money(lumpTax.ok)}
+            Lump-sum tax detail: federal {money(lumpTax.fed)} (the 401(k) plus Social Security taxed on those returns), {p.txMove ? "Texas" : st.name} {money(lumpTax.ok)}
             {lumpTax.penalty > 0 ? `, early-withdrawal penalty ${money(lumpTax.penalty)}` : ""}. The Rule of 55 only
             waives the penalty if you leave the job in or after the year you turn 55 and withdraw from that employer's
             plan. Rolling to an IRA first brings the penalty back until 59½.
