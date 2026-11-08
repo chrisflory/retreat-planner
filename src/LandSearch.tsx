@@ -123,13 +123,14 @@ const money = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
 
 const SQFT_PER_ACRE = 43560;
 
-/** Land first, then a house or manufactured home on that acreage. Lot size is square feet, which is what Zillow applies. */
-function zillowHouseOnLand(place: string, acresMin: number, acresMax: number, priceMax: number) {
+/** Lot size is square feet, which is what Zillow applies. Auctions are left off. */
+function zillowSearch(place: string, acresMin: number, acresMax: number, priceMax: number, withHouse: boolean) {
   const filterState: Record<string, unknown> = {
     sortSelection: { value: "lot" },
+    isAuction: { value: false },
     isLotLand: { value: true },
-    isSingleFamily: { value: true },
-    isManufactured: { value: true },
+    isSingleFamily: { value: withHouse },
+    isManufactured: { value: withHouse },
     isCondo: { value: false },
     isTownhouse: { value: false },
     isMultiFamily: { value: false },
@@ -159,12 +160,10 @@ function searchLinks(c: Criteria, county: string | null) {
   const typeWords = c.type === "any" ? "" : `${t.label.toLowerCase()} `;
   const acres = lo > 0 || hi > 0 ? `${lo}-${hi} acres ` : "";
   const google = c.withHouse
-    ? `${where} ${acres}with a house OR cabin OR manufactured home ${typeWords}creek OR pond`
-    : `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
+    ? `${where} ${acres}with a house OR cabin OR manufactured home ${typeWords}creek OR pond -auction`
+    : `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond -auction`;
   const place = county ? `${slug(county)}-county-${code.toLowerCase()}` : code.toLowerCase();
-  const zillow = c.withHouse
-    ? zillowHouseOnLand(place, lo, hi, Math.max(0, Math.round(c.priceMax)))
-    : `https://www.zillow.com/${place}/land/`;
+  const zillow = zillowSearch(place, lo, hi, Math.max(0, Math.round(c.priceMax)), c.withHouse);
   return [
     { site: "LandWatch", url: `https://www.landwatch.com/${slug(st.name)}-${lwKind}-for-sale${countySeg}${lwPrice}${lwAcres}` },
     { site: c.withHouse ? "Zillow (land + house)" : "Zillow (land)", url: zillow },
@@ -525,8 +524,8 @@ export default function LandSearch({
               </Field>
               <Text size="small" tone="tertiary">
                 {c.withHouse
-                  ? "The land comes first. Zillow checks Lots/Land, Houses, and Manufactured, on your acre range and under your price, largest lots first. A cabin can be filed as land or as a house, so both are included. Condos and townhouses are left out. LandWatch's homes search keeps the same county, acres, and price."
-                  : "Off searches vacant land. Turn this on for acreage that already has a house, cabin, or manufactured home."}
+                  ? "The land comes first. Zillow checks Lots/Land, Houses, and Manufactured, on your acre range and under your price, largest lots first. Auctions are left unchecked. A cabin can be filed as land or as a house, so both are included. Condos and townhouses are left out. LandWatch's homes search keeps the same county, acres, and price."
+                  : "Off searches vacant land. Zillow uses your acre range and price and leaves auctions unchecked. Turn this on for acreage that already has a house, cabin, or manufactured home."}
               </Text>
               <Field label="Acres, minimum">
                 <Num
@@ -615,9 +614,8 @@ export default function LandSearch({
             {c.acresMax} acres{c.priceMax > 0 ? `, and under ${money(c.priceMax)}` : ""}. Land.com and Lands of America
             answer this computer with Access Denied on every page, including a single listing, in Chrome as well as
             Brave. Those buttons are gone.{" "}
-            {c.withHouse
-              ? "Zillow opens in Chrome already limited to that acre range and price."
-              : "Zillow's land search opens in Chrome and still needs its own acres and price filters."}{" "}
+            Zillow opens in Chrome on that acre range and price, with auctions left off. LandWatch has no
+            auction switch in the link, so skip a card there if it says auction.{" "}
             Save the
             search on the site to get new listings by email.
           </Text>
