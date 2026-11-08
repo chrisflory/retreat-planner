@@ -80,9 +80,61 @@ type Criteria = {
   townWithinMi: number;
   noHoa: boolean;
   usesAllowed: boolean;
-  /** Off searches vacant land. On searches acreage that already has a house. */
-  withHouse: boolean;
+  /** Older saves used this one switch. New saves use `zillow` instead. */
+  withHouse?: boolean;
+  zillow: ZillowOpts;
 };
+
+type ZillowOpts = {
+  houses: boolean;
+  townhomes: boolean;
+  multiFamily: boolean;
+  condos: boolean;
+  lotsLand: boolean;
+  apartments: boolean;
+  manufactured: boolean;
+  byAgent: boolean;
+  byOwner: boolean;
+  newConstruction: boolean;
+  comingSoon: boolean;
+  foreclosure: boolean;
+  auction: boolean;
+};
+
+const DEFAULT_ZILLOW: ZillowOpts = {
+  houses: false,
+  townhomes: false,
+  multiFamily: false,
+  condos: false,
+  lotsLand: true,
+  apartments: false,
+  manufactured: false,
+  byAgent: true,
+  byOwner: true,
+  newConstruction: true,
+  comingSoon: true,
+  foreclosure: true,
+  auction: false,
+};
+
+const ZILLOW_HOME: { key: keyof ZillowOpts; label: string; filter: string }[] = [
+  { key: "houses", label: "Houses", filter: "isSingleFamily" },
+  { key: "townhomes", label: "Townhomes", filter: "isTownhouse" },
+  { key: "multiFamily", label: "Multi-family", filter: "isMultiFamily" },
+  { key: "condos", label: "Condos/Co-ops", filter: "isCondo" },
+  { key: "lotsLand", label: "Lots/Land", filter: "isLotLand" },
+  { key: "apartments", label: "Apartments", filter: "isApartment" },
+  { key: "manufactured", label: "Manufactured", filter: "isManufactured" },
+];
+
+const ZILLOW_LISTING: { key: keyof ZillowOpts; label: string; filter: string }[] = [
+  { key: "byAgent", label: "For sale by agent", filter: "isForSaleByAgent" },
+  { key: "byOwner", label: "For sale by owner", filter: "isForSaleByOwner" },
+  { key: "newConstruction", label: "New construction", filter: "isNewConstruction" },
+  { key: "comingSoon", label: "Coming soon", filter: "isComingSoon" },
+  { key: "foreclosure", label: "Foreclosure", filter: "isForSaleForeclosure" },
+  { key: "auction", label: "Auction", filter: "isAuction" },
+];
 
 const DEFAULT_CRITERIA: Criteria = {
   state: "OK",
@@ -102,7 +154,22 @@ const DEFAULT_CRITERIA: Criteria = {
   noHoa: true,
   usesAllowed: true,
   withHouse: false,
+  zillow: DEFAULT_ZILLOW,
 };
+
+/** Fill missing fields, and turn Houses and Manufactured on when an older save had "With a house" on. */
+function normalizeCriteria(stored: Partial<Criteria> | undefined): Criteria {
+  const zillow = { ...DEFAULT_ZILLOW, ...(stored?.zillow ?? {}) };
+  if (stored?.zillow == null && stored?.withHouse) {
+    zillow.houses = true;
+    zillow.manufactured = true;
+  }
+  return { ...DEFAULT_CRITERIA, ...stored, zillow };
+}
+
+function wantsDwelling(z: ZillowOpts) {
+  return z.houses || z.townhomes || z.multiFamily || z.condos || z.apartments || z.manufactured;
+}
 
 export type Listing = {
   id: string;
@@ -123,19 +190,10 @@ const money = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
 
 const SQFT_PER_ACRE = 43560;
 
-/** Lot size is square feet, which is what Zillow applies. Auctions are left off. */
-function zillowSearch(place: string, acresMin: number, acresMax: number, priceMax: number, withHouse: boolean) {
-  const filterState: Record<string, unknown> = {
-    sortSelection: { value: "lot" },
-    isAuction: { value: false },
-    isLotLand: { value: true },
-    isSingleFamily: { value: withHouse },
-    isManufactured: { value: withHouse },
-    isCondo: { value: false },
-    isTownhouse: { value: false },
-    isMultiFamily: { value: false },
-    isApartment: { value: false },
-  };
+/** Lot size is square feet. Every home type and listing type is sent from the toggles. */
+function zillowSearch(place: string, acresMin: number, acresMax: number, priceMax: number, z: ZillowOpts) {
+  const filterState: Record<string, unknown> = { sortSelection: { value: "lot" } };
+  for (const opt of [...ZILLOW_HOME, ...ZILLOW_LISTING]) filterState[opt.filter] = { value: z[opt.key] };
   const lot: { min?: number; max?: number } = {};
   if (acresMin > 0) lot.min = acresMin * SQFT_PER_ACRE;
   if (acresMax > 0) lot.max = acresMax * SQFT_PER_ACRE;
@@ -156,17 +214,27 @@ function searchLinks(c: Criteria, county: string | null) {
   const lwPrice = c.priceMax > 0 ? `/price-under-${Math.round(c.priceMax)}` : "";
   const countySeg = county ? `/${slug(county)}-county` : "";
   const where = county ? `"${county} County" ${code}` : st.name;
-  const lwKind = c.withHouse ? "homes" : t.lw;
+  const dwelling = wantsDwelling(c.zillow);
+  const lwKind = dwelling ? "homes" : t.lw;
   const typeWords = c.type === "any" ? "" : `${t.label.toLowerCase()} `;
   const acres = lo > 0 || hi > 0 ? `${lo}-${hi} acres ` : "";
-  const google = c.withHouse
-    ? `${where} ${acres}with a house OR cabin OR manufactured home ${typeWords}creek OR pond -auction`
-    : `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond -auction`;
+  const dwellingWords = [
+    c.zillow.houses ? "house" : "",
+    c.zillow.manufactured ? "cabin OR manufactured home" : "",
+    c.zillow.townhomes ? "townhouse" : "",
+    c.zillow.condos ? "condo" : "",
+    c.zillow.multiFamily ? "multi-family" : "",
+    c.zillow.apartments ? "apartment" : "",
+  ].filter(Boolean);
+  const googleBase = dwelling
+    ? `${where} ${acres}${dwellingWords.join(" OR ")} ${c.zillow.lotsLand ? "on acreage " : ""}${typeWords}creek OR pond`
+    : `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
+  const google = c.zillow.auction ? googleBase : `${googleBase} -auction`;
   const place = county ? `${slug(county)}-county-${code.toLowerCase()}` : code.toLowerCase();
-  const zillow = zillowSearch(place, lo, hi, Math.max(0, Math.round(c.priceMax)), c.withHouse);
+  const zillow = zillowSearch(place, lo, hi, Math.max(0, Math.round(c.priceMax)), c.zillow);
   return [
     { site: "LandWatch", url: `https://www.landwatch.com/${slug(st.name)}-${lwKind}-for-sale${countySeg}${lwPrice}${lwAcres}` },
-    { site: c.withHouse ? "Zillow (land + house)" : "Zillow (land)", url: zillow },
+    { site: "Zillow", url: zillow },
     { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
   ];
 }
@@ -386,7 +454,7 @@ export default function LandSearch({
   onUseInPlan: (state: StateId | null, price: number, acres: number, listing: Listing) => void;
 }) {
   const [storedC, setC] = useCanvasState<Criteria>("land-criteria-v1", DEFAULT_CRITERIA);
-  const c: Criteria = { ...DEFAULT_CRITERIA, ...storedC };
+  const c = normalizeCriteria(storedC);
   const [listings, setListings] = useCanvasState<Listing[]>("land-listings-v1", []);
   const [planAcres, setPlanAcres] = useState(() => readPlanAcres());
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -395,7 +463,12 @@ export default function LandSearch({
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [waterById, setWaterById] = useState<Record<string, WaterFeature[]>>({});
 
-  const set = <K extends keyof Criteria>(k: K, v: Criteria[K]) => setC((prev) => ({ ...DEFAULT_CRITERIA, ...prev, [k]: v }));
+  const set = <K extends keyof Criteria>(k: K, v: Criteria[K]) => setC((prev) => ({ ...normalizeCriteria(prev), [k]: v }));
+  const setZillow = (k: keyof ZillowOpts, v: boolean) =>
+    setC((prev) => {
+      const next = normalizeCriteria(prev);
+      return { ...next, zillow: { ...next.zillow, [k]: v } };
+    });
   useEffect(() => {
     publishLandSearch();
     setPlanAcres(readPlanAcres());
@@ -504,7 +577,7 @@ export default function LandSearch({
                   value={c.state}
                   onChange={(v) => {
                     const id = v as StateId;
-                    setC((prev) => ({ ...DEFAULT_CRITERIA, ...prev, state: id, counties: STATE_META[id].counties }));
+                    setC((prev) => ({ ...normalizeCriteria(prev), state: id, counties: STATE_META[id].counties }));
                     applyLinkedState(id);
                   }}
                   options={STATE_IDS.map((id) => ({ value: id, label: STATES[id].name }))}
@@ -519,13 +592,31 @@ export default function LandSearch({
               <Field label="Property type">
                 <Select value={c.type} onChange={(v) => set("type", v as PropType)} options={(Object.keys(PROP_TYPES) as PropType[]).map((k) => ({ value: k, label: PROP_TYPES[k].label }))} />
               </Field>
-              <Field label="With a house">
-                <Toggle checked={c.withHouse} onChange={(v) => set("withHouse", v)} />
-              </Field>
+              <Text size="small" tone="secondary">
+                Zillow home type
+              </Text>
+              {ZILLOW_HOME.map((opt) => (
+                <Field key={opt.key} label={opt.label}>
+                  <Toggle checked={c.zillow[opt.key]} onChange={(v) => setZillow(opt.key, v)} />
+                </Field>
+              ))}
+              <Text size="small" tone="secondary">
+                Zillow listing type
+              </Text>
+              {ZILLOW_LISTING.map((opt) => (
+                <Field key={opt.key} label={opt.label}>
+                  <Toggle checked={c.zillow[opt.key]} onChange={(v) => setZillow(opt.key, v)} />
+                </Field>
+              ))}
               <Text size="small" tone="tertiary">
-                {c.withHouse
-                  ? "The land comes first. Zillow checks Lots/Land, Houses, and Manufactured, on your acre range and under your price, largest lots first. Auctions are left unchecked. A cabin can be filed as land or as a house, so both are included. Condos and townhouses are left out. LandWatch's homes search keeps the same county, acres, and price."
-                  : "Off searches vacant land. Zillow uses your acre range and price and leaves auctions unchecked. Turn this on for acreage that already has a house, cabin, or manufactured home."}
+                The app sends the checked types to Zillow with your acre range and price, largest lots first. Lots/Land
+                starts on and Auction starts off.{" "}
+                {wantsDwelling(c.zillow)
+                  ? "A house type is on, so LandWatch opens its homes search for the same county, acres, and price."
+                  : "No house type is on, so LandWatch stays on vacant land for the property type above."}{" "}
+                {c.zillow.auction
+                  ? "Auction is on, so auction listings are included."
+                  : "Auction is off. The broker search drops that word. LandWatch has no auction switch, so skip a card there if it says auction."}
               </Text>
               <Field label="Acres, minimum">
                 <Num
@@ -610,14 +701,11 @@ export default function LandSearch({
         <Stack gap={12}>
           <H2>1. Search the listing sites</H2>
           <Text tone="secondary">
-            LandWatch opens in your usual browser on the county, {c.withHouse ? "homes" : "property type"}, {c.acresMin}–
+            LandWatch opens in your usual browser on the county, {wantsDwelling(c.zillow) ? "homes" : "property type"}, {c.acresMin}–
             {c.acresMax} acres{c.priceMax > 0 ? `, and under ${money(c.priceMax)}` : ""}. Land.com and Lands of America
             answer this computer with Access Denied on every page, including a single listing, in Chrome as well as
-            Brave. Those buttons are gone.{" "}
-            Zillow opens in Chrome on that acre range and price, with auctions left off. LandWatch has no
-            auction switch in the link, so skip a card there if it says auction.{" "}
-            Save the
-            search on the site to get new listings by email.
+            Brave. Those buttons are gone. Zillow opens in Chrome with the home types and listing types checked above,
+            on that acre range and price. Save the search on the site to get new listings by email.
           </Text>
           <Table headers={["Where", "Open search"]} rows={linkRows} />
           <Callout tone="neutral" title="Why the app doesn't scrape the sites">
