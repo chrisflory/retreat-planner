@@ -80,6 +80,8 @@ type Criteria = {
   townWithinMi: number;
   noHoa: boolean;
   usesAllowed: boolean;
+  /** Off searches vacant land. On searches acreage that already has a house. */
+  withHouse: boolean;
 };
 
 const DEFAULT_CRITERIA: Criteria = {
@@ -99,6 +101,7 @@ const DEFAULT_CRITERIA: Criteria = {
   townWithinMi: 20,
   noHoa: true,
   usesAllowed: true,
+  withHouse: false,
 };
 
 export type Listing = {
@@ -129,10 +132,18 @@ function searchLinks(c: Criteria, county: string | null) {
   const lwPrice = c.priceMax > 0 ? `/price-under-${Math.round(c.priceMax)}` : "";
   const countySeg = county ? `/${slug(county)}-county` : "";
   const where = county ? `"${county} County" ${code}` : st.name;
-  const google = `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
+  const lwKind = c.withHouse ? "homes" : t.lw;
+  const zillowKind = c.withHouse ? "houses" : "land";
+  const typeWords = c.type === "any" ? "" : `${t.label.toLowerCase()} `;
+  const google = c.withHouse
+    ? `${where} ${typeWords}house for sale ${lo}-${hi} acres creek OR pond`
+    : `${where} land for sale ${lo}-${hi} acres ${c.type === "any" ? "" : t.label.toLowerCase()} creek OR pond`;
+  const zillowBase = county
+    ? `https://www.zillow.com/${slug(county)}-county-${code.toLowerCase()}/${zillowKind}/`
+    : `https://www.zillow.com/${code.toLowerCase()}/${zillowKind}/`;
   return [
-    { site: "LandWatch", url: `https://www.landwatch.com/${slug(st.name)}-${t.lw}-for-sale${countySeg}${lwPrice}${lwAcres}` },
-    { site: "Zillow (land)", url: county ? `https://www.zillow.com/${slug(county)}-county-${code.toLowerCase()}/land/` : `https://www.zillow.com/${code.toLowerCase()}/land/` },
+    { site: "LandWatch", url: `https://www.landwatch.com/${slug(st.name)}-${lwKind}-for-sale${countySeg}${lwPrice}${lwAcres}` },
+    { site: c.withHouse ? "Zillow (houses)" : "Zillow (land)", url: zillowBase },
     { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
   ];
 }
@@ -485,6 +496,14 @@ export default function LandSearch({
               <Field label="Property type">
                 <Select value={c.type} onChange={(v) => set("type", v as PropType)} options={(Object.keys(PROP_TYPES) as PropType[]).map((k) => ({ value: k, label: PROP_TYPES[k].label }))} />
               </Field>
+              <Field label="With a house">
+                <Toggle checked={c.withHouse} onChange={(v) => set("withHouse", v)} />
+              </Field>
+              <Text size="small" tone="tertiary">
+                {c.withHouse
+                  ? "LandWatch opens its homes search and Zillow opens houses, still on your county, acres, and price. The property type is included in the Google search. Zillow still needs its own acre and price filters."
+                  : "Off searches vacant land. Turn this on to look for acreage that already has a house."}
+              </Text>
               <Field label="Acres, minimum">
                 <Num
                   value={c.acresMin}
@@ -568,7 +587,7 @@ export default function LandSearch({
         <Stack gap={12}>
           <H2>1. Search the listing sites</H2>
           <Text tone="secondary">
-            LandWatch opens in your usual browser on the county, property type, {c.acresMin}–
+            LandWatch opens in your usual browser on the county, {c.withHouse ? "homes" : "property type"}, {c.acresMin}–
             {c.acresMax} acres{c.priceMax > 0 ? `, and under ${money(c.priceMax)}` : ""}. Land.com and Lands of America
             answer this computer with Access Denied on every page, including a single listing, in Chrome as well as
             Brave. Those buttons are gone. Zillow opens in Chrome and needs its own acres and price filters. Save the
