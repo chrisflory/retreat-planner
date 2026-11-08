@@ -1351,8 +1351,8 @@ const TIPS: Record<string, string> = {
     "Yearly growth on the 401(k) until you withdraw it, and on money that stays in the 401(k) when withdrawals are As needed. 4% is a conservative stock-and-bond mix. This does not grow the cash left after you take the money out.",
   "Interest on cash after withdrawal, %":
     "Yearly interest on cash after an All at once or Split withdrawal, and on other savings. Leave this at 0 if the money sits in checking. It is separate from 401(k) growth.",
-  Home:
-    "Used RV keeps the trailer as the house. Small house / shelter replaces it with a shell, a wood stove, and wiring, and drops the RV, the RV pedestal, the RV replacement fund, and the backup cabin. Well, septic, and power stay on their own lines.",
+  "Living in":
+    "Used RV keeps the trailer and its costs. Small house / shelter replaces them with a shell, a wood stove, and wiring. Well, septic, and power stay on their own lines. Setting an RV cost to $0 does not switch this.",
   "Inflation, %": "How fast living costs rise each year. Social Security rises with it (COLA).",
   "Contingency on costs, %":
     "A cushion added on top of all yearly living costs for surprises. Set it to 0 if your numbers already include one.",
@@ -1937,12 +1937,34 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     />
   );
 
+  const livingChoice = (
+    <Stack gap={4}>
+      <Row gap={8} wrap align="center">
+        <Text size="small" tone="secondary">
+          Living in
+        </Text>
+        <Pill size="sm" active={housingOf(p) === "rv"} onClick={() => set("housing", "rv")}>
+          Used RV
+        </Pill>
+        <Pill size="sm" active={housingOf(p) === "house"} onClick={() => set("housing", "house")}>
+          Small house / shelter
+        </Pill>
+      </Row>
+      <Text size="small" tone="tertiary">
+        {housingOf(p) === "house"
+          ? "The plan uses a shell, a wood stove, and wiring. The RV, the pedestal, and the RV replacement fund are left out. Well, septic, and power stay separate."
+          : "The plan uses a used RV. Choosing Small house / shelter replaces those costs. Setting the RV line to $0 does not switch the plan."}
+      </Text>
+    </Stack>
+  );
+
   return (
     <Stack gap={20}>
       {part !== "sustain" && (
       <>
       <Stack gap={6}>
         <H1>{st.name} land retreat: retirement cash plan</H1>
+        {livingChoice}
         <Text tone="secondary">
           Household of {who}, age {ageNowFrom(p)}, retiring at {startAge(p)} in {p.startYear}, living in {housingOf(p) === "house" ? "a small house" : "an RV"} on {est.acres} acres
           in {st.name}
@@ -2302,7 +2324,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Field label="Collapse happens at age">
                 <NumField value={p.collapseAge} onChange={(n) => set("collapseAge", n)} width={64} />
               </Field>
-              <Field label="Home">
+              <Field label="Living in">
                 <Select
                   value={housingOf(p)}
                   onChange={(v) => set("housing", v as Housing)}
@@ -2941,12 +2963,19 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               Wi-Fi calling stay up during an outage. It also gives you cell service through Wi-Fi calling where towers
               are weak.
             </Callout>
-            <Callout tone="neutral" title="Powering the RV itself">
-              Plug the RV's shore cord into the 50 A pedestal. The pedestal is fed by the grid, the hybrid inverter or
-              the generator. A 30 A RV needs a 50-to-30 A adapter. Add a hardwired surge protector with low-voltage
-              shutoff (about $300), because rural co-op lines sag and spike in storms. To start a roof A/C on
-              battery or a small generator, add a soft-start kit (about $300). It cuts the start surge by about 70%.
-            </Callout>
+            {housingOf(p) === "house" ? (
+              <Callout tone="neutral" title="Powering the house">
+                The house wiring line is the panel and the rough-in. The co-op line, the solar bank, and the generator
+                stay on their own lines. A small house does not use the RV pedestal.
+              </Callout>
+            ) : (
+              <Callout tone="neutral" title="Powering the RV itself">
+                Plug the RV's shore cord into the 50 A pedestal. The pedestal is fed by the grid, the hybrid inverter or
+                the generator. A 30 A RV needs a 50-to-30 A adapter. Add a hardwired surge protector with low-voltage
+                shutoff (about $300), because rural co-op lines sag and spike in storms. To start a roof A/C on
+                battery or a small generator, add a soft-start kit (about $300). It cuts the start surge by about 70%.
+              </Callout>
+            )}
             <Callout tone="warning" title="Getting grid power to the land">
               Before you make an offer, call the electric utility that serves the parcel (for example, {loc.coops}) and
               get a written line-extension quote. A pole near the road can
@@ -2963,6 +2992,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       <>
       <Stack gap={6}>
         <H1>Self-reliance: food, water and staying alive</H1>
+        {livingChoice}
         <Text tone="secondary">
           Chickens, a garden, hunting, the well, and what still works if the bills stop. Turning something off here
           takes it out of the retirement plan too. The dollar boxes are the same ones as on that tab. This page is
@@ -2976,32 +3006,58 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         <H2>{housingOf(p) === "house" ? "Water for the house" : "Water for the RV: refilling, drinking and showers"}</H2>
         <Text tone="secondary">
           {housingOf(p) === "house"
-            ? "The house connects to the well and a permitted septic. Filter drinking water at the sink, and test the well for coliform and nitrates when it is drilled and every year after. Rain catchment stays the backup. The steps below are for an RV, if you switch Home back to Used RV."
+            ? "The house connects to the well and a permitted septic. Filter drinking water at the sink, and test the well for coliform and nitrates when it is drilled and every year after. Rain catchment stays the backup."
             : `An RV fresh-water tank holds 40–100 gallons. With short showers, ${who} uses about ${adults === 1 ? "10–20" : `${10 * adults}–${20 * adults}`} gallons a day, so a full tank lasts about 3–7 days when you're not hooked up. The goal is to plumb the RV to the well so you never haul water.`}
         </Text>
         <Table
           headers={["Method", "How", "Cost", "When to use it"]}
           rowTone={["success", "info", "neutral", "warning"]}
-          rows={[
-            ["Hook up to the well (best)", "Run a frost-free yard hydrant at the pad, then a drinking-water hose (NSF-61, white or blue), a pressure regulator set to 40–55 psi, and an inline sediment and carbon filter into the RV's city-water inlet. Water flows on demand, like a house.", "$300–800 plus the hydrant (in the RV pedestal line)", "Every day once the well is in. Below about 20°F, use a heated hose or fill the tank and disconnect."],
-            ["Fill the fresh tank from the hydrant", "Fill through the tank's fill port and run the RV's 12 V pump.", "$0", "Hard freezes, or to keep running if the well pump loses power."],
-            ["Haul water", "Fill a 275-gal food-grade IBC tote or a 35–100 gal truck-bed tank at a rural water district station, then pump it into the RV with a 12 V transfer pump.", "$400–800 for tank and pump; water is cents a gallon", "Before the well is drilled, or if the well fails."],
-            ["Rain, pond or creek (collapse)", "Run it through a gravity filter (Berkey or Sawyer), then boil it or add bleach. Never put untreated pond water in the RV tank.", "Rain catchment and filters are in the hardening build", "Grid-down backup only."],
-          ]}
+          rows={
+            housingOf(p) === "house"
+              ? [
+                  ["Well to the house (best)", "The drilled well and pressure tank feed the sink, shower, and toilet. Filter drinking water at the sink.", "The well and septic lines in setup", "Every day once the well and septic are in."],
+                  ["Rain catchment", "Roof water into a tank, then a gravity filter, for the garden and as backup drinking water after you filter or boil it.", "Rain catchment is in the hardening build", "Dry weeks, or if the well pump is down."],
+                  ["Haul water", "A food-grade tank filled at a rural water station, then a transfer pump into storage at the house.", "$400–800 for tank and pump", "Before the well is drilled, or if the well fails."],
+                  ["Pond or creek (collapse)", "Filter, then boil or bleach. Do not run untreated surface water through the house plumbing.", "Filters are in the hardening build", "Grid-down backup only."],
+                ]
+              : [
+                  ["Hook up to the well (best)", "Run a frost-free yard hydrant at the pad, then a drinking-water hose (NSF-61, white or blue), a pressure regulator set to 40–55 psi, and an inline sediment and carbon filter into the RV's city-water inlet. Water flows on demand, like a house.", "$300–800 plus the hydrant (in the RV pedestal line)", "Every day once the well is in. Below about 20°F, use a heated hose or fill the tank and disconnect."],
+                  ["Fill the fresh tank from the hydrant", "Fill through the tank's fill port and run the RV's 12 V pump.", "$0", "Hard freezes, or to keep running if the well pump loses power."],
+                  ["Haul water", "Fill a 275-gal food-grade IBC tote or a 35–100 gal truck-bed tank at a rural water district station, then pump it into the RV with a 12 V transfer pump.", "$400–800 for tank and pump; water is cents a gallon", "Before the well is drilled, or if the well fails."],
+                  ["Rain, pond or creek (collapse)", "Run it through a gravity filter (Berkey or Sawyer), then boil it or add bleach. Never put untreated pond water in the RV tank.", "Rain catchment and filters are in the hardening build", "Grid-down backup only."],
+                ]
+          }
         />
         <Grid columns={2} gap={16}>
-          <Callout tone="info" title="Sanitize the system">
-            Do this when you buy the RV and every 6–12 months after. Add ¼ cup of plain unscented bleach per 15 gallons
-            of tank, mixed into a gallon of water. Fill the tank, then run every faucet and the shower until you smell
-            chlorine. Let it sit at least 4 hours (overnight is better), then drain and flush with fresh water until
-            the smell is gone. Bypass and drain the water heater first.
-          </Callout>
-          <Callout tone="neutral" title="Drinking water and waste">
-            Test the well for coliform bacteria and nitrates when it's drilled and every year after (about $25–75 at a
-            state-certified lab). Use a countertop or under-sink filter for drinking water, and keep at least 14 gallons
-            per person stored in case the pump fails. Gray and black tanks drain to the septic cleanout through a sewer
-            hose. Keep the black valve closed until the tank is two-thirds full so solids flush out.
-          </Callout>
+          {housingOf(p) === "house" ? (
+            <>
+              <Callout tone="info" title="Sanitize the well">
+                Shock the well when it is drilled and if a test comes back dirty. Use the health department's bleach
+                dose for the well volume, run each faucet until you smell chlorine, wait, then flush. Do not drink it
+                until the chlorine is gone.
+              </Callout>
+              <Callout tone="neutral" title="Drinking water and waste">
+                Test the well for coliform bacteria and nitrates when it's drilled and every year after (about $25–75 at
+                a state-certified lab). Filter at the sink, and keep at least 14 gallons per person stored if the pump
+                fails. Waste goes to the permitted septic. Pump it on the schedule in the monthly costs.
+              </Callout>
+            </>
+          ) : (
+            <>
+              <Callout tone="info" title="Sanitize the system">
+                Do this when you buy the RV and every 6–12 months after. Add ¼ cup of plain unscented bleach per 15 gallons
+                of tank, mixed into a gallon of water. Fill the tank, then run every faucet and the shower until you smell
+                chlorine. Let it sit at least 4 hours (overnight is better), then drain and flush with fresh water until
+                the smell is gone. Bypass and drain the water heater first.
+              </Callout>
+              <Callout tone="neutral" title="Drinking water and waste">
+                Test the well for coliform bacteria and nitrates when it's drilled and every year after (about $25–75 at a
+                state-certified lab). Use a countertop or under-sink filter for drinking water, and keep at least 14 gallons
+                per person stored in case the pump fails. Gray and black tanks drain to the septic cleanout through a sewer
+                hose. Keep the black valve closed until the tank is two-thirds full so solids flush out.
+              </Callout>
+            </>
+          )}
         </Grid>
       </Stack>
 
