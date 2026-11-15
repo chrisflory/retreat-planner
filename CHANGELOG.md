@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.0+beta.3
+
+- **Saved plans:** name and save every entry (assumptions, setup and living costs, estimates), then load, export or delete it from "Saved plans" at the top of Assumptions. Loading keeps what you had as "Before loading …" so you can switch back. Export writes a .json file with the system save dialog; Import adds a plan file to the list.
+- **Fixed:** the 401(k) at retirement was in future dollars while the costs, land and Social Security are in today's dollars, which overstated the money for anyone retiring years from now. The plan now uses the balance in today's dollars and shows both figures. The chart's line before retirement is in today's dollars too.
+- **Fixed:** the summary's Social Security figure now includes the Social Security cut switch and a spouse's check, matching the math.
+- Removed two test screenshots that were committed by mistake in beta.2.
+
 ## 2.1.0+beta.2
 
 - **Fixed:** when the money ran out, the plan carried the shortfall as a debt that later Social Security paid back, so the line could dip below $0 and come back as if you'd borrowed. Balances now stop at $0. Bills in those years are counted as unpaid, and if income later beats the budgeted bills, the leftover builds up from $0.

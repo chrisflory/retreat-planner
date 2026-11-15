@@ -596,3 +596,53 @@ textarea.input {
     position: static;
   }
 }
+
+.plans {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-status {
+  font-size: 12.5px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--fill);
+  border-left: 3px solid var(--c-green);
+}
+.plan-status.error {
+  border-left-color: var(--c-red);
+}
+.plan-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--stroke);
+  border-radius: 8px;
+}
+.plan-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.plan-row + .plan-row {
+  border-top: 1px solid var(--stroke);
+}
+.plan-row.auto .plan-name {
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.plan-meta {
+  flex: 1;
+  min-width: 0;
+}
+.plan-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plan-date {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
