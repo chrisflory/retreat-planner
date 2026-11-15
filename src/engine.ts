@@ -1044,7 +1044,18 @@ export function nestEgg(p: Params) {
     k401 = k401 * (1 + r401) + contrib;
     savings = savings * (1 + rCash) + save;
   }
-  return { years, k401, savings, contrib, save };
+  // The balances above are future dollars. Everything else in the plan (costs, land, Social Security from
+  // ssa.gov, tax brackets) is in today's dollars, so the retirement plan uses the balances in today's dollars.
+  const deflate = Math.pow(1 + (p.inflation ?? 0) / 100, years);
+  return {
+    years,
+    k401: k401 / deflate,
+    savings: savings / deflate,
+    k401Future: k401,
+    savingsFuture: savings,
+    contrib,
+    save,
+  };
 }
 export const goalOf = (p: Params) => Math.min(END_AGE, Math.max(startAge(p) + 1, Math.round(p.goalAge ?? 85)));
 

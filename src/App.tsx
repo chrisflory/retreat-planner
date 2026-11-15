@@ -28,6 +28,16 @@ import {
 } from "./ui";
 import { openExternal } from "./net";
 import {
+  exportPlanFile,
+  importPlanFile,
+  makePlan,
+  planFromFile,
+  uniqueName,
+  upsertPlan,
+  type PlanData,
+  type SavedPlan,
+} from "./plans";
+import {
   clampAcresToRange,
   DEFAULT_COUNTIES,
   expandAcreRange,
@@ -433,6 +443,59 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   }, []);
   const [storedEst, setStoredEst] = useCanvasState<Partial<Estimates>>("estimates-v1", {});
   const [chosenStored, setChosen] = useCanvasState<ChosenLand | null>("chosen-land-v1", null);
+  const [savedPlans, setSavedPlans] = useCanvasState<SavedPlan[]>("saved-plans-v1", []);
+  const [planName, setPlanName] = useState("");
+  const [planStatus, setPlanStatus] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const currentPlan = (): PlanData => ({
+    params: storedP as unknown as Record<string, unknown>,
+    upfront: storedUp,
+    recurring: storedRec,
+    estimates: storedEst as Record<string, unknown>,
+    chosen: chosenStored,
+  });
+  const savePlan = () => {
+    const name = planName.trim() || `Plan ${new Date().toLocaleDateString("en-US")}`;
+    const exists = savedPlans.some((x) => !x.auto && x.name.toLowerCase() === name.toLowerCase());
+    setSavedPlans((list) => upsertPlan(list, makePlan(name, currentPlan())));
+    setPlanName(name);
+    setPlanStatus({ tone: "ok", text: exists ? `Updated "${name}" with what's entered now.` : `Saved "${name}".` });
+  };
+  const loadPlan = (plan: SavedPlan) => {
+    const keep = `Before loading ${plan.name}`;
+    setSavedPlans((list) => upsertPlan(list, makePlan(keep, currentPlan(), true)));
+    setP(plan.params as unknown as Params);
+    setUp(plan.upfront);
+    setRec(plan.recurring);
+    setStoredEst(plan.estimates as Partial<Estimates>);
+    setEstimates(mergeEst(plan.estimates as Partial<Estimates>));
+    setChosen((plan.chosen ?? null) as ChosenLand | null);
+    if (!plan.auto) setPlanName(plan.name);
+    setPlanStatus({ tone: "ok", text: `Loaded "${plan.name}". What you had before is kept as "${keep}".` });
+  };
+  const deletePlan = (plan: SavedPlan) => {
+    setSavedPlans((list) => list.filter((x) => x !== plan && !(x.name === plan.name && x.savedAt === plan.savedAt)));
+    setPlanStatus({ tone: "ok", text: `Deleted "${plan.name}".` });
+  };
+  const exportPlan = async (plan: SavedPlan) => {
+    try {
+      const where = await exportPlanFile(plan);
+      if (where !== null) setPlanStatus({ tone: "ok", text: where ? `Exported "${plan.name}" to ${where}.` : `Downloaded "${plan.name}".` });
+    } catch (e) {
+      setPlanStatus({ tone: "error", text: `Couldn't export: ${e instanceof Error ? e.message : String(e)}` });
+    }
+  };
+  const importPlan = async () => {
+    try {
+      const text = await importPlanFile();
+      if (text === null) return;
+      const plan = planFromFile(text);
+      const name = uniqueName(savedPlans, plan.name);
+      setSavedPlans((list) => upsertPlan(list, { ...plan, name }));
+      setPlanStatus({ tone: "ok", text: `Imported "${name}". Click Load to use it.` });
+    } catch (e) {
+      setPlanStatus({ tone: "error", text: e instanceof Error ? e.message : String(e) });
+    }
+  };
   const [landListings, setLandListings] = useCanvasState<ListingDeedSource[]>("land-listings-v1", []);
   const chosen = resolveChosen(chosenStored, landListings);
   setEstimates(mergeEst(storedEst));
@@ -712,7 +775,8 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const steadyPre65 = annualCost(rec, Math.max(60, startAge(p) + 1), p, healthAtAge(Math.max(60, startAge(p) + 1)));
   const livingAtStart = annualCost(rec, startAge(p), p, healthAtAge(startAge(p)));
   const steadyPost65 = annualCost(rec, 66, p, false);
-  const ssAnnual = p.ssMonthly * 12;
+  // The household's yearly check when it starts, in today's dollars, after any cut and with a spouse's check.
+  const ssAnnual = ssPay(p, Math.max(0, p.ssAge - startAge(p)), 0);
 
   const nowAge = ageNowFrom(p);
   const retireAt = startAge(p);
@@ -728,8 +792,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     const contrib = Math.max(0, p.jobContrib ?? 0);
     const save = Math.max(0, p.jobSave ?? 0);
     for (let age = nowAge; age <= END_AGE; age++) {
+      // Today's dollars, to match the rest of the chart.
+      const deflate = Math.pow(1 + p.inflation / 100, age - nowAge);
       if (age < retireAt) {
-        beforeWithdrawals.push(Math.round(k401 + savingsNow));
+        beforeWithdrawals.push(Math.round((k401 + savingsNow) / deflate));
         k401 = k401 * (1 + r401) + contrib;
         savingsNow = savingsNow * (1 + rCash) + save;
       } else if (age === retireAt) {
@@ -1030,8 +1096,14 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             ? `One year of pay before retirement, during ${THIS_YEAR}.`
             : `${egg.years} years of pay before retirement, ${THIS_YEAR} through ${p.startYear - 1}.`}{" "}
           Nothing is withdrawn until then. The 401(k) goes from {money(p.k401)} today to{" "}
-          {money(egg.k401)}, with {money(egg.contrib)} a year contributed and {p.ret}% growth. Other savings go from{" "}
-          {money(p.savings ?? 0)} to {money(egg.savings)}, with {money(egg.save)} a year saved and {p.cashReturn ?? 0}% interest.{" "}
+          {money(egg.k401Future)} in {p.startYear}, with {money(egg.contrib)} a year contributed and {p.ret}% growth.
+          After {egg.years} {egg.years === 1 ? "year" : "years"} of {p.inflation}% inflation that buys what{" "}
+          {money(egg.k401)} buys today, and the plan uses that figure, because the costs, the land and Social
+          Security are all in today's dollars.
+          {p.ret < p.inflation ? ` At ${p.ret}% growth the account loses ground to inflation every year until you retire.` : ""}{" "}
+          {(p.savings ?? 0) > 0 || (egg.save ?? 0) > 0
+            ? `Other savings go from ${money(p.savings ?? 0)} to ${money(egg.savingsFuture)} in ${p.startYear} (${money(egg.savings)} in today's dollars), with ${money(egg.save)} a year saved and ${p.cashReturn ?? 0}% interest. `
+            : ""}
           {(p.jobPay ?? 0) > 0 && egg.contrib + egg.save > (p.jobPay ?? 0)
             ? `Contributions plus savings add up to more than the ${money(p.jobPay)} wage.`
             : "The rest of the paycheck is your cost of living now and is not in the plan."}{" "}
@@ -1148,6 +1220,50 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           <CardHeader>Assumptions</CardHeader>
           <CardBody>
             <div className="sections">
+            <Section
+              title="Saved plans"
+              defaultOpen={false}
+              summary={savedPlans.filter((x) => !x.auto).length ? `${savedPlans.filter((x) => !x.auto).length} saved` : "Save these entries to come back to them"}
+            >
+              <div className="plans">
+                <Row gap={8} align="center">
+                  <TextInput value={planName} onChange={setPlanName} placeholder="Name this plan, like Wyoming house at 67" style={{ flex: 1 }} />
+                  <Pill onClick={savePlan}>Save</Pill>
+                </Row>
+                <Row gap={8} wrap>
+                  <Pill size="sm" onClick={() => void exportPlan(makePlan(planName || "Current plan", currentPlan()))}>
+                    Export current plan
+                  </Pill>
+                  <Pill size="sm" onClick={() => void importPlan()}>
+                    Import a plan file
+                  </Pill>
+                </Row>
+                {planStatus && <div className={`plan-status ${planStatus.tone}`}>{planStatus.text}</div>}
+                {savedPlans.length > 0 && (
+                  <div className="plan-list">
+                    {savedPlans.map((plan) => (
+                      <div key={`${plan.name}-${plan.savedAt}`} className={`plan-row${plan.auto ? " auto" : ""}`}>
+                        <div className="plan-meta">
+                          <div className="plan-name">{plan.name}</div>
+                          <div className="plan-date">
+                            {plan.auto ? "Kept automatically · " : ""}
+                            {new Date(plan.savedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}
+                          </div>
+                        </div>
+                        <Pill size="sm" onClick={() => loadPlan(plan)}>Load</Pill>
+                        <Pill size="sm" onClick={() => void exportPlan(plan)}>Export</Pill>
+                        <Pill size="sm" onClick={() => deletePlan(plan)}>Delete</Pill>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <Text size="small" tone="tertiary">
+                  Saving keeps every entry on every tab: assumptions, setup and living costs, and estimates. Loading a
+                  plan keeps what you had as "Before loading …" so you can switch back. Export makes a .json file you can
+                  back up or open on another computer with Import.
+                </Text>
+              </div>
+            </Section>
             <Section title="You and the timeline" defaultOpen={true} summary={`${st.name}, ${who}, retire at ${startAge(p)}`}>
             <div className="fields">
               <Field label="State">

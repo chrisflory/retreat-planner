@@ -2,6 +2,8 @@
 
 use std::process::{Command, Stdio};
 
+use tauri_plugin_dialog::DialogExt;
+
 /// Zillow often answers Brave with Access Denied. Open it in Chrome or Firefox.
 /// Land.com and Lands of America deny every page from this computer, so the app
 /// does not open those hosts.
@@ -46,6 +48,40 @@ fn open_in_clear_browser(url: String) -> Result<(), String> {
     }
 }
 
+/// Save a plan file the user picks with the system dialog. Returns where it went, or None if they cancelled.
+#[tauri::command]
+async fn export_plan(app: tauri::AppHandle, contents: String, file_name: String) -> Result<Option<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Export plan")
+        .set_file_name(&file_name)
+        .add_filter("Retreat Planner plan", &["json"])
+        .blocking_save_file();
+    let Some(picked) = picked else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, contents).map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// Read a plan file the user picks with the system dialog. Returns its text, or None if they cancelled.
+#[tauri::command]
+async fn import_plan(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Import plan")
+        .add_filter("Retreat Planner plan", &["json"])
+        .blocking_pick_file();
+    let Some(picked) = picked else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if meta.len() > 2_000_000 {
+        return Err("That file is too big to be a plan.".into());
+    }
+    std::fs::read_to_string(&path).map(Some).map_err(|e| format!("Couldn't read {}: {e}", path.display()))
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(
@@ -59,7 +95,8 @@ fn main() {
         )
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![open_in_clear_browser])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![open_in_clear_browser, export_plan, import_plan])
         .run(tauri::generate_context!())
         .expect("error while running Retreat Planner");
 }

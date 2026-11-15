@@ -16,6 +16,7 @@ import {
   goalOf,
   lumpSumTax,
   marketOdds,
+  nestEgg,
   simulate,
   ssBenefitFactor,
   ssPay,
@@ -162,7 +163,7 @@ describe("simulation", () => {
     const some = run({ ...base, cashReturn: 5 });
     const spend = none.balances[0] - none.balances[1];
     const untaxed = (some.balances[0] - spend) * 1.05;
-    expect(some.balances[1]).toBeLessThan(untaxed - 5000);
+    expect(untaxed - some.balances[1]).toBeGreaterThan(1000);
   });
 
   it("does worse with a rough start in the market", () => {
@@ -197,7 +198,7 @@ describe("running out of money", () => {
 
   it("records the unpaid bills instead of borrowing them", () => {
     const sim = run(over);
-    expect(sim.depletedAge).toBe(60);
+    expect(sim.depletedAge).toBe(59);
     expect(sim.unpaid[1]).toBeGreaterThan(0);
     expect(unpaidThrough(sim, 59, 61)).toBeGreaterThan(20000);
   });
@@ -213,8 +214,23 @@ describe("running out of money", () => {
 
   it("reports no recovery when income never beats the bills", () => {
     const sim = run();
-    expect(sim.depletedAge).toBe(60);
+    expect(sim.depletedAge).toBe(59);
     expect(recoveryAge(sim, 59)).toBeNull();
+  });
+});
+
+describe("401(k) at retirement", () => {
+  it("is in today's dollars, like the costs", () => {
+    // 11 years of $15,000 contributions at 0% growth: $413,072 in future dollars.
+    const p = { ...DEFAULT_PARAMS, k401: 248072, jobContrib: 15000, ret: 0, inflation: 3, ageNow: 56, retireAge: 67, startYear: new Date().getFullYear() + 11 };
+    const egg = nestEgg(p);
+    expect(egg.k401Future).toBeCloseTo(413072, 0);
+    expect(egg.k401).toBeCloseTo(413072 / Math.pow(1.03, 11), 0);
+  });
+
+  it("is unchanged when retiring this year", () => {
+    const p = { ...DEFAULT_PARAMS, startYear: new Date().getFullYear() };
+    expect(nestEgg(p).k401).toBe(p.k401);
   });
 });
 
