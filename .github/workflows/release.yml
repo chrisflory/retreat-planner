@@ -41,6 +41,8 @@ jobs:
 
       - run: npm ci
 
+      - run: npm test
+
       # Build only. Installers are attached with gh release create.
       # tagName here uploads a second copy of each file onto that release.
       - uses: tauri-apps/tauri-action@v0
