@@ -39,7 +39,8 @@ function Root() {
   const [theme, setTheme] = useTheme();
   return (
     <div className="page">
-      <Row gap={8} wrap style={{ marginBottom: 12 }}>
+      <div className="topbar">
+      <Row gap={8} wrap>
         <Pill active={tab === "plan"} onClick={() => setTab("plan")}>
           Retirement plan
         </Pill>
@@ -60,6 +61,7 @@ function Root() {
           </Pill>
         ))}
       </Row>
+      </div>
       {tab === "land" ? (
         <LandSearch
           onUseInPlan={(state, price, acres, listing: Listing) => {

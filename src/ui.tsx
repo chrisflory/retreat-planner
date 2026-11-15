@@ -164,7 +164,11 @@ export function Text({
 }
 
 export const H1 = ({ children }: { children?: ReactNode }) => <h1 className="h1">{children}</h1>;
-export const H2 = ({ children }: { children?: ReactNode }) => <h2 className="h2">{children}</h2>;
+export const H2 = ({ children, id }: { children?: ReactNode; id?: string }) => (
+  <h2 className="h2" id={id}>
+    {children}
+  </h2>
+);
 export const H3 = ({ children }: { children?: ReactNode }) => <h3 className="h3">{children}</h3>;
 
 export function Card({ children, style }: { children?: ReactNode; variant?: "default" | "borderless"; style?: CSSProperties }) {
@@ -222,6 +226,33 @@ export function Stat({ value, label, tone }: { value: ReactNode; label: string; 
       </div>
       <div className="stat-label">{label}</div>
     </div>
+  );
+}
+
+/** A titled group that opens and closes, and stays the way you left it. */
+export function Section({
+  title,
+  summary,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  summary?: ReactNode;
+  defaultOpen?: boolean;
+  children?: ReactNode;
+}) {
+  const [open, setOpen] = useCanvasState<boolean>(`section:${title}`, defaultOpen);
+  return (
+    <section className={`section${open ? " open" : ""}`}>
+      <button type="button" className="section-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+        <span className="section-chevron" aria-hidden>
+          ›
+        </span>
+        <span className="section-title">{title}</span>
+        {!open && summary && <span className="section-summary">{summary}</span>}
+      </button>
+      {open && <div className="section-body">{children}</div>}
+    </section>
   );
 }
 
@@ -371,9 +402,10 @@ export function UsageBar({
   );
 }
 
-type Series = { name: string; data: (number | null)[]; tone?: Tone };
+type Series = { name: string; data: (number | null)[]; tone?: Tone; color?: Color; dashed?: boolean };
 
-const seriesColor = (s: Series, i: number) => (s.tone ? TONE_COLOR[s.tone] : colorVar(CHART_SEQUENCE[i % CHART_SEQUENCE.length]));
+const seriesColor = (s: Series, i: number) =>
+  s.color ? colorVar(s.color) : s.tone ? TONE_COLOR[s.tone] : colorVar(CHART_SEQUENCE[i % CHART_SEQUENCE.length]);
 
 const compact = (prefix: string) => (v: number) => {
   const abs = Math.abs(v);
@@ -490,7 +522,7 @@ export function LineChart({
             />
           )}
           {series.map((s, i) => (
-            <Line key={s.name} type="monotone" dataKey={s.name} stroke={seriesColor(s, i)} strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} />
+            <Line key={s.name} type="monotone" dataKey={s.name} stroke={seriesColor(s, i)} strokeWidth={2} strokeDasharray={s.dashed ? "5 4" : undefined} dot={false} connectNulls={false} isAnimationActive={false} />
           ))}
         </RLineChart>
       </ResponsiveContainer>

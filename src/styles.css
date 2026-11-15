@@ -384,3 +384,210 @@ textarea.input {
     height: 300px;
   }
 }
+
+/* ---- 2.1 layout: sticky top bar, verdict, section links, grouped inputs ---- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  height: 48px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--stroke);
+  margin-bottom: 12px;
+}
+.topbar > * {
+  flex: 1;
+}
+
+.h2 {
+  scroll-margin-top: 100px;
+}
+#sec-assumptions {
+  scroll-margin-top: 100px;
+}
+
+.method summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--accent);
+  user-select: none;
+  width: fit-content;
+}
+.method[open] summary {
+  margin-bottom: 6px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: center;
+  padding: 16px 18px;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border-left: 4px solid var(--c-green);
+}
+.hero.short {
+  border-left-color: var(--c-red);
+}
+.hero-age {
+  font-size: 46px;
+  line-height: 1;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-green);
+}
+.hero.short .hero-age {
+  color: var(--c-red);
+}
+.hero-caption {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.hero-goal {
+  margin-top: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.hero-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.jump-nav {
+  position: sticky;
+  top: 48px;
+  z-index: 15;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  padding: 6px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--stroke);
+}
+.jump-link {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.jump-link:hover {
+  background: var(--fill-strong);
+  color: var(--text-primary);
+}
+
+.sections {
+  display: flex;
+  flex-direction: column;
+}
+.section + .section {
+  border-top: 1px solid var(--stroke);
+}
+.section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 2px;
+  font: inherit;
+  text-align: left;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.section-head:hover .section-title {
+  color: var(--accent);
+}
+.section-chevron {
+  display: inline-block;
+  width: 10px;
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+}
+.section.open .section-chevron {
+  transform: rotate(90deg);
+}
+.section-title {
+  font-size: 13px;
+  font-weight: 620;
+}
+.section-summary {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.section-body {
+  padding: 2px 2px 14px 18px;
+}
+.preset-row {
+  padding-top: 12px;
+  border-top: 1px solid var(--stroke);
+}
+
+.plan-results {
+  position: sticky;
+  top: 96px;
+}
+
+.health-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.health-year {
+  min-width: 78px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke);
+  border-top: 3px solid var(--c-blue);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+.health-year.medicaid {
+  border-top-color: var(--c-green);
+}
+.health-year.full {
+  border-top-color: var(--c-orange);
+}
+.health-year.gap {
+  border-top-color: var(--c-red);
+}
+.health-age {
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.health-kind {
+  color: var(--text-secondary);
+}
+.health-cost {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+
+@media (max-width: 1000px) {
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plan-results {
+    position: static;
+  }
+}

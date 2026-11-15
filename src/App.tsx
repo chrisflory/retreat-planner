@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   BarChart,
   Callout,
@@ -13,6 +13,7 @@ import {
   LineChart,
   Pill,
   Row,
+  Section,
   Select,
   Stack,
   Stat,
@@ -150,6 +151,11 @@ import {
   type SimResult,
   type SimAdjust,
   setEstimates,
+  marketOdds,
+  badStartReturns,
+  hasSpouse,
+  fplOf,
+  type HealthPlan,
 } from "./engine";
 
 const money = (n: number) =>
@@ -298,7 +304,7 @@ function Field({
 }
 
 const REC_TIPS: Record<string, string> = {
-  aca: "ACA marketplace health insurance (healthcare.gov) before Medicare. This is the subsidized price in low-income years. In a year your income passes 400% of the poverty line, the plan uses the full price from Assumptions instead.",
+  aca: "ACA marketplace health insurance (healthcare.gov) before Medicare. Only used when pricing from income is off in Assumptions. Then it's the subsidized price, and a year with income past 400% of the poverty line uses the full price instead.",
   medicare: "From 65: Medicare Part B premium, a Medigap Plan G supplement and a Part D drug plan. A $0-premium Medicare Advantage plan costs less but limits your doctors.",
   oop: "What insurance doesn't cover: dental, glasses, prescription copays.",
   liability: "Covers someone getting hurt on your land, plus the barn and outbuildings.",
@@ -695,8 +701,14 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       : normal;
   const pm = POWER[p.powerMode] ?? POWER.grid;
 
-  const steadyPre65 = annualCost(rec, 60, p, false);
-  const livingAtStart = annualCost(rec, startAge(p), p, false);
+  /** The plan's pre-65 health premium at an age (today's dollars), or the flat line when income-based is off. */
+  const healthAtAge = (age: number): boolean | number => {
+    if (p.acaByIncome === false || age >= 65) return false;
+    const h = normal.health[age - startAge(p)];
+    return h ? h.cost : false;
+  };
+  const steadyPre65 = annualCost(rec, Math.max(60, startAge(p) + 1), p, healthAtAge(Math.max(60, startAge(p) + 1)));
+  const livingAtStart = annualCost(rec, startAge(p), p, healthAtAge(startAge(p)));
   const steadyPost65 = annualCost(rec, 66, p, false);
   const ssAnnual = p.ssMonthly * 12;
 
@@ -729,8 +741,12 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     ages.map((_, i) => {
       const age = nowAge + i;
       if (age < retireAt) return null;
-      const v = sim.balances[age - retireAt];
-      return v == null ? null : Math.round(v);
+      const k = age - retireAt;
+      const v = sim.balances[k];
+      if (v == null) return null;
+      if (v >= 0) return Math.round(v);
+      // The line ends at $0 the year the money runs out instead of diving into a shortfall.
+      return k === 0 || (sim.balances[k - 1] ?? 0) >= 0 ? 0 : null;
     });
   const nestAtRetirement = beforeWithdrawals[retireAt - nowAge];
   const cashAtRetirement = afterLine(normal)[retireAt - nowAge];
@@ -750,6 +766,24 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   const cutLasts = cutSim ? lastsLabel(cutSim) : null;
   const cutCarriesFurther = cutSim !== null && (cutSim.depletedAge === null || cutSim.depletedAge > goal + 5);
   const GOAL_AGES = [70, 75, 80, 85, 90, 95];
+  const roughSim = isLump(p)
+    ? null
+    : simulate(p, rec, upfrontTotal, p.inflation, null, land, { returns: badStartReturns(p) });
+  // Market odds run a few hundred simulations, so only redo them when an input changes.
+  const oddsKey = part === "sustain" ? "" : JSON.stringify([p, rec, upfrontTotal, land, goal, EST]);
+  const odds = useMemo(
+    () => (part === "sustain" ? null : marketOdds(p, rec, upfrontTotal, p.inflation, land, goal)),
+    [oddsKey],
+  );
+  const oddsPct = odds ? Math.round(odds.chance * 100) : 0;
+  const oddsTone: "success" | "warning" | "danger" = oddsPct >= 85 ? "success" : oddsPct >= 60 ? "warning" : "danger";
+  const pre65Health = normal.health.slice(0, Math.max(0, 65 - retireAt));
+  const HEALTH_LABEL: Record<HealthPlan["kind"], string> = {
+    medicaid: "Medicaid",
+    subsidized: "Subsidized",
+    full: "Full price",
+    gap: "Coverage gap",
+  };
 
   const allocTaxes = normal.year0Tax;
   const allocOther = coreTotal - land - homeCost;
@@ -791,7 +825,11 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
   ]);
 
   const chartItems = RECURRING.filter((i) => i.rule !== "post65" && showRec(i.id))
-    .map((i) => ({ label: (i.id === "rvins" && housingOf(p) === "house" ? "Dwelling insurance" : i.label).split(" (")[0], value: recAmount(rec, i.id, p) }))
+    .map((i) => {
+      const h = i.id === "aca" ? healthAtAge(Math.max(60, startAge(p) + 1)) : false;
+      const label = i.id === "aca" && typeof h === "number" ? "Health insurance (from income)" : (i.id === "rvins" && housingOf(p) === "house" ? "Dwelling insurance" : i.label).split(" (")[0];
+      return { label, value: typeof h === "number" ? Math.round(h) : recAmount(rec, i.id, p) };
+    })
     .sort((a, b) => b.value - a.value)
     .slice(0, 8);
 
@@ -849,21 +887,115 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         <H1>{st.name} land retreat: retirement cash plan</H1>
         {livingChoice}
         <Text tone="secondary">
-          Household of {who}, age {ageNowFrom(p)}, retiring at {startAge(p)} in {p.startYear}, living in {housingOf(p) === "house" ? "a small house" : "an RV"} on {est.acres} acres
-          in {st.name}
-          {linked.saved ? `, the same place Land search is using (${linked.counties})` : ""}. Land is budgeted at {money(land)}
-          {linked.saved ? `, the Land search maximum` : ""}. Costs
-          marked "per person" scale with the household size in Assumptions. Every number with a box is editable, and
-          the charts recompute as you type. Taxes use 2026 federal brackets plus {st.name} state tax (
-          {st.taxNote}). Brackets, the standard deduction, and the Social Security thresholds rise with each chart
-          line's inflation. Federal tax includes Social Security in a year the IRS worksheet taxes it. State tax is on
-          the 401(k) withdrawal
-          {p.txMove ? ", except that the withdrawal is taken while you're still a Texas resident" : ""}.
-          These are planning estimates, not tax advice. Chickens, the garden, hunting, water and the grid-down plan are on the Self-reliance tab. The switches here still change those costs.
+          Household of {who}, age {ageNowFrom(p)}, retiring at {startAge(p)} in {p.startYear}, living in{" "}
+          {housingOf(p) === "house" ? "a small house" : "an RV"} on {est.acres} acres in {st.name}
+          {linked.saved ? ` (${linked.counties})` : ""}. Land is budgeted at {money(land)}. Every number with a box is
+          editable, and everything recomputes as you type.
         </Text>
+        <details className="method">
+          <summary>How the math works</summary>
+          <Text size="small" tone="secondary">
+            Costs marked "per person" scale with the household size. Taxes use 2026 federal brackets plus {st.name} state
+            tax ({st.taxNote}). Brackets and the standard deduction rise with each chart line's inflation. The Social
+            Security tax thresholds don't, because the law fixes them, so more of the benefit is taxed as prices rise.
+            The $6,000 deduction for people 65 and older is counted for 2025 through 2028. Interest on cash is taxed the
+            year after it's earned. State tax is on the 401(k) withdrawal
+            {p.txMove ? ", except that the withdrawal is taken while you're still a Texas resident" : ""}. Health insurance
+            before 65 is priced from each year's income with the 2026 ACA subsidy table
+            {p.acaByIncome === false ? " (turned off in Assumptions, so the flat health line is used)" : ""}. Market
+            odds replay retirement {odds && !odds.cashOnly ? odds.runs : 300} times with the 401(k) return swinging around
+            its average by the amount in Assumptions. These are planning estimates, not tax or financial advice. Chickens,
+            the garden, hunting, water and the grid-down plan are on the Self-reliance tab.
+          </Text>
+        </details>
       </Stack>
 
-      <Callout tone={shortfall ? "danger" : "success"} title={`Normal economy: money lasts to age ${lastsLabel(normal)}`}>
+      <div className={`hero ${covered ? "ok" : "short"}`}>
+        <div className="hero-verdict">
+          <div className="hero-age">{lastsLabel(normal)}</div>
+          <div className="hero-caption">Money lasts to age, normal economy</div>
+          <div className="hero-goal">
+            <span>{covered ? `Covers your goal of ${goal}` : `${goal - (normal.depletedAge ?? goal)} years short of ${goal}`}</span>
+          </div>
+        </div>
+        <div className="hero-side">
+          <Row gap={6} wrap align="center">
+            <Text size="small" tone="secondary">
+              Money needs to last through age
+            </Text>
+            {GOAL_AGES.map((age) => (
+              <Pill key={age} size="sm" active={goal === age} onClick={() => set("goalAge", age)}>
+                {age}
+              </Pill>
+            ))}
+          </Row>
+          <Grid columns={3} gap={12}>
+            <Stat
+              value={odds ? (odds.cashOnly ? (odds.chance ? "Yes" : "No") : `${oddsPct}%`) : "…"}
+              label={odds?.cashOnly ? "Lasts to goal (cash, so markets don't move it)" : `Chance it lasts to ${goal} with market swings`}
+              tone={odds?.cashOnly ? (odds.chance ? "success" : "danger") : oddsTone}
+            />
+            <Stat
+              value={roughSim ? lastsLabel(roughSim) : "—"}
+              label={roughSim ? "Rough market start: lasts to age" : "Rough start: no effect on cash"}
+              tone={roughSim ? (covers(roughSim, goal) ? "success" : "danger") : undefined}
+            />
+            <Stat
+              value={lastsLabel(highInf)}
+              label={`High inflation (${EST.highInflation}%): lasts to age`}
+              tone={covers(highInf, goal) ? "success" : "danger"}
+            />
+          </Grid>
+        </div>
+      </div>
+
+      <div className="jump-nav">
+        {[
+          ["assumptions", "Assumptions"],
+          ["whatifs", "What-ifs"],
+          ["states", "States"],
+          ["allocation", "Where it goes"],
+          ["texas", "Texas move"],
+          ["setup", "Setup costs"],
+          ["living", "Living costs"],
+          ["estimates", "Estimates"],
+          ["power", "Power"],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className="jump-link"
+            onClick={() => document.getElementById(`sec-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <Callout
+        tone={covered ? "success" : "warning"}
+        title={covered ? `Covered through age ${goal}` : `Runs out at ${lastsLabel(normal)}, short of ${goal}`}
+      >
+        {covered
+          ? `With the numbers entered now, money lasts to age ${lastsLabel(normal)}. Pick a later age to see what that would take.`
+          : `That's ${goal - (normal.depletedAge ?? goal)} years early. Keeping everything else the same, either of these closes the gap:`}
+        {!covered && (
+          <Stack gap={4} style={{ marginTop: 6 }}>
+            <Text size="small">
+              {spendCut === null
+                ? "Spending less can't fix it. Even with living costs at $0, setup and taxes spend the account in the first years. Switch Withdrawal to \"As needed\", trim the setup, or add savings."
+                : `Spend ${money(spendCut / 12)} less per month, leaving about ${money(Math.max(0, livingAtStart - spendCut) / 12)}/mo at age ${startAge(p)}. Both figures are today's dollars, and the cut rises with inflation.${cutCarriesFurther ? ` That same cut actually lasts to ${cutLasts}: this plan fails in the first years, and covering those covers the later ones too.` : ""}`}
+            </Text>
+            <Text size="small">
+              {extraIncome === null
+                ? "Extra income can't fix it either, for the same reason: the account is gone before the income can refill it."
+                : `Or earn ${money(extraIncome)} more per year until age ${goal}, on top of any part-time income already entered. Type it into "Part-time income" and set "Part-time work until age" to ${goal}.`}
+            </Text>
+          </Stack>
+        )}
+      </Callout>
+
+      <Callout tone={shortfall ? "danger" : "success"} title="How the money moves">
         {p.strategy === "lump"
           ? `Taking the full ${money(egg.k401)} in one year costs about ${money(normal.year0Tax)} in tax, which is more than the ${housingOf(p) === "house" ? "house" : "RV"}. `
           : p.strategy === "split"
@@ -877,41 +1009,6 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           ? ` Under these assumptions it runs out at ${lastsLabel(normal)}, before your target of ${goal}. What it takes to get there is just below.`
           : ` That covers your target of ${goal}.`}
       </Callout>
-
-      <Stack gap={8}>
-        <Row gap={8} wrap align="center">
-          <Text size="small" tone="secondary">
-            Need the money to last through age
-          </Text>
-          {GOAL_AGES.map((age) => (
-            <Pill key={age} size="sm" active={goal === age} onClick={() => set("goalAge", age)}>
-              {age}
-            </Pill>
-          ))}
-        </Row>
-        <Callout
-          tone={covered ? "success" : "warning"}
-          title={covered ? `Covered through age ${goal}` : `Runs out at ${lastsLabel(normal)}, short of ${goal}`}
-        >
-          {covered
-            ? `With the numbers entered now, money lasts to age ${lastsLabel(normal)}. Pick a later age to see what that would take.`
-            : `That's ${goal - (normal.depletedAge ?? goal)} years early. Keeping everything else the same, either of these closes the gap:`}
-          {!covered && (
-            <Stack gap={4} style={{ marginTop: 6 }}>
-              <Text size="small">
-                {spendCut === null
-                  ? "Spending less can't fix it. Even with living costs at $0, setup and taxes spend the account in the first years. Switch Withdrawal to \"As needed\", trim the setup, or add savings."
-                  : `Spend ${money(spendCut / 12)} less per month, leaving about ${money(Math.max(0, livingAtStart - spendCut) / 12)}/mo at age ${startAge(p)}. Both figures are today's dollars, and the cut rises with inflation.${cutCarriesFurther ? ` That same cut actually lasts to ${cutLasts}: this plan fails in the first years, and covering those covers the later ones too.` : ""}`}
-              </Text>
-              <Text size="small">
-                {extraIncome === null
-                  ? "Extra income can't fix it either, for the same reason: the account is gone before the income can refill it."
-                  : `Or earn ${money(extraIncome)} more per year until age ${goal}, on top of any part-time income already entered. Type it into "Part-time income" and set "Part-time work until age" to ${goal}.`}
-              </Text>
-            </Stack>
-          )}
-        </Callout>
-      </Stack>
 
       {egg.years > 0 && (
         <Callout tone="info" title={`Working until ${p.startYear}`}>
@@ -1032,10 +1129,12 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         </Card>
       )}
 
-      <div className="plan-main">
+      <div className="plan-main" id="sec-assumptions">
         <Card>
           <CardHeader>Assumptions</CardHeader>
           <CardBody>
+            <div className="sections">
+            <Section title="You and the timeline" defaultOpen={true} summary={`${st.name}, ${who}, retire at ${startAge(p)}`}>
             <div className="fields">
               <Field label="State">
                 <Select
@@ -1097,6 +1196,20 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                   : ""}
               </Text>
               </div>
+              <Field label="Filing status">
+                <Select
+                  value={p.status}
+                  onChange={(v) => set("status", v as Status)}
+                  options={[
+                    { value: "mfj", label: "Married, joint" },
+                    { value: "single", label: "Single" },
+                  ]}
+                />
+              </Field>
+            </div>
+            </Section>
+            <Section title="Savings and withdrawals" defaultOpen={true} summary={`${kMoney(p.k401)} 401(k), ${p.strategy === "lump" ? "all at once" : p.strategy === "split" ? "split" : "as needed"}`}>
+            <div className="fields">
               <Field label="Wages until you retire, $/yr">
                 <NumField value={p.jobPay ?? 0} onChange={(n) => set("jobPay", n)} />
               </Field>
@@ -1111,16 +1224,6 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               </Field>
               <Field label="Other savings (cash, brokerage, Roth)">
                 <NumField value={p.savings ?? 0} onChange={(n) => set("savings", n)} />
-              </Field>
-              <Field label="Filing status">
-                <Select
-                  value={p.status}
-                  onChange={(v) => set("status", v as Status)}
-                  options={[
-                    { value: "mfj", label: "Married, joint" },
-                    { value: "single", label: "Single" },
-                  ]}
-                />
               </Field>
               <Field label="Withdrawal">
                 <Select
@@ -1163,8 +1266,11 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                   </Field>
                 </>
               )}
-              <Divider />
-              <Field label={adults > 1 ? "Social Security, $/mo combined" : "Social Security, $/mo"}>
+            </div>
+            </Section>
+            <Section title="Social Security and other income" defaultOpen={true} summary={`${money(p.ssMonthly)}/mo at ${p.ssAge}`}>
+            <div className="fields">
+              <Field label={adults > 1 ? "Your Social Security, $/mo" : "Social Security, $/mo"}>
                 <NumField value={p.ssMonthly} onChange={setSsMonthly} />
               </Field>
               <Field label="Claim Social Security at age">
@@ -1181,6 +1287,23 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                   })()}
                 </Text>
               </div>
+              {hasSpouse(p) && (
+                <>
+                  <Field label="Spouse's Social Security, $/mo">
+                    <NumField value={p.ssSpouseMonthly ?? 0} onChange={(n) => set("ssSpouseMonthly", n)} />
+                  </Field>
+                  <Field label="Your age when the spouse's check starts">
+                    <NumField value={p.ssSpouseStart ?? 67} onChange={(n) => set("ssSpouseStart", n)} width={64} />
+                  </Field>
+                  <div className="span-2">
+                    <Text size="small" tone="tertiary">
+                      Enter the spouse's own benefit from ssa.gov, or the spousal benefit (up to half of your full benefit)
+                      if that's larger. If you entered a combined figure above before, set this to $0 to avoid counting it
+                      twice.
+                    </Text>
+                  </div>
+                </>
+              )}
               <Field label="Part-time income, $/yr">
                 <NumField value={p.otherIncome} onChange={(n) => set("otherIncome", n)} />
               </Field>
@@ -1190,10 +1313,47 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Field label={`Social Security cut to ${EST.ssCutPct}% from ${EST.ssCutYear}`}>
                 <Toggle checked={p.ssCut} onChange={(v) => set("ssCut", v)} />
               </Field>
-              <Divider />
-              <Field label="401(k) growth while working, %">
+            </div>
+            </Section>
+            <Section title="Health insurance before 65" defaultOpen={true} summary={p.acaByIncome === false ? "Flat line" : "Priced from income"}>
+            <div className="fields">
+              <Field label="Price ACA insurance from income">
+                <Toggle checked={p.acaByIncome !== false} onChange={(v) => set("acaByIncome", v)} />
+              </Field>
+              <Field label="Full-price ACA insurance (no subsidy), $/yr per person">
+                <NumField value={p.acaUnsub} onChange={(n) => set("acaUnsub", n)} />
+              </Field>
+              {st.medicaid && p.acaByIncome !== false && (
+                <Field label="Use Medicaid in low-income years">
+                  <Toggle checked={p.useMedicaid !== false} onChange={(v) => set("useMedicaid", v)} />
+                </Field>
+              )}
+              <div className="span-2">
+                <Text size="small" tone="tertiary">
+                  {p.acaByIncome === false
+                    ? `Uses the flat health line in living costs, and full price in any year income passes ${money(acaCliff(p))}.`
+                    : `Each year's premium comes from that year's income: withdrawals, part-time pay, interest and all of Social Security. Above ${money(acaCliff(p))} (400% of the poverty line) there's no subsidy.`}{" "}
+                  {st.medicaid
+                    ? `${st.name} expanded Medicaid, which covers income under about ${money(fplOf(p) * 1.38)}. For anyone 55 or older, the state can recover Medicaid costs from the estate after death, and land counts. Turn Medicaid off to price full coverage instead.`
+                    : `${st.name} hasn't expanded Medicaid. Income under ${money(fplOf(p))} gets no subsidy at all, so the plan charges full price in those years.`}
+                </Text>
+              </div>
+            </div>
+            </Section>
+            <Section title="Markets, inflation and collapse" defaultOpen={false} summary={`${p.ret}% growth, ${p.inflation}% inflation, collapse at ${p.collapseAge}`}>
+            <div className="fields">
+              <Field label="401(k) growth, %/yr average">
                 <NumField value={p.ret} onChange={(n) => set("ret", n)} width={64} />
               </Field>
+              <Field label="Yearly swing in 401(k) returns, %">
+                <NumField value={p.vol ?? 10} onChange={(n) => set("vol", n)} width={64} />
+              </Field>
+              <div className="span-2">
+                <Text size="small" tone="tertiary">
+                  How far a typical year lands from the average. About 5 for mostly bonds, 10 for a 50/50 mix, 15 for
+                  mostly stocks. It drives the market odds and the rough-start line. It doesn't affect cash.
+                </Text>
+              </div>
               <Field label="Interest on cash after withdrawal, %">
                 <NumField value={p.cashReturn ?? 0} onChange={(n) => set("cashReturn", n)} width={64} />
               </Field>
@@ -1203,12 +1363,13 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Field label="Contingency on costs, %">
                 <NumField value={p.contingency} onChange={(n) => set("contingency", n)} width={64} />
               </Field>
-              <Field label="Full-price ACA insurance (no subsidy), $/yr per person">
-                <NumField value={p.acaUnsub} onChange={(n) => set("acaUnsub", n)} />
-              </Field>
               <Field label="Collapse happens at age">
                 <NumField value={p.collapseAge} onChange={(n) => set("collapseAge", n)} width={64} />
               </Field>
+            </div>
+            </Section>
+            <Section title="Home, power and heat" defaultOpen={false} summary={`${housingOf(p) === "house" ? "Small house" : "RV"}, ${POWER[p.powerMode]?.label ?? ""}`}>
+            <div className="fields">
               <Field label="Living in">
                 <Select
                   value={housingOf(p)}
@@ -1236,7 +1397,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Field label="Include collapse-hardening build">
                 <Toggle checked={p.hardening} onChange={(v) => set("hardening", v)} />
               </Field>
-              <Divider />
+            </div>
+            </Section>
+            <Section title="Food: hunting, chickens and garden" defaultOpen={false} summary={[p.hunting && "hunting", p.chickens && "chickens", p.garden && "garden"].filter(Boolean).join(", ") || "None"}>
+            <div className="fields">
               <Field label="Hunt for meat">
                 <Toggle checked={p.hunting} onChange={(v) => set("hunting", v)} />
               </Field>
@@ -1252,7 +1416,6 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Field label="Store meat value, $/lb">
                 <NumField value={p.meatValue} onChange={(n) => set("meatValue", n)} width={64} />
               </Field>
-              <Divider />
               <Field label="Chickens for eggs">
                 <Toggle checked={p.chickens} onChange={(v) => set("chickens", v)} />
               </Field>
@@ -1268,8 +1431,9 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Field label="Produce the garden replaces, $/yr">
                 <NumField value={p.gardenSave ?? 700} onChange={(n) => set("gardenSave", n)} />
               </Field>
-              <Divider />
-              <div className="span-2">
+            </div>
+            </Section>
+              <div className="preset-row">
               <Row gap={8}>
                 <Pill onClick={() => applyPreset(PRESET_PLANNED)}>Planned build</Pill>
                 <Pill onClick={() => applyPreset(PRESET_LEAN)}>Lean build</Pill>
@@ -1289,67 +1453,95 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           </CardBody>
         </Card>
 
-        <Stack gap={12}>
-          <H3>Money remaining by age, {p.ssCut ? "three" : "four"} scenarios</H3>
-          <LineChart
-            categories={ages}
-            series={[
-              { name: "401(k) before the withdrawals", data: beforeWithdrawals, tone: "success" },
-              { name: `Normal economy (${p.inflation}% inflation)${p.ssCut ? ", Social Security cut" : ""}`, data: afterLine(normal), tone: "info" },
-              ...(p.ssCut
-                ? []
-                : [{ name: `Social Security cut to ${EST.ssCutPct}% in ${EST.ssCutYear}`, data: afterLine(ssCutSim), tone: "danger" as const }]),
-              { name: `High inflation (${EST.highInflation}%)`, data: afterLine(highInf), tone: "warning" },
-              { name: `Collapse at ${p.collapseAge} (cash frozen, useless)`, data: afterLine(collapse), tone: "neutral" },
-            ]}
-            valuePrefix="$"
-            fluid
-            yFloor={-100_000}
-            drop={
-              nestAtRetirement != null && cashAtRetirement != null
-                ? { x: String(retireAt), from: nestAtRetirement, to: cashAtRetirement }
-                : undefined
-            }
-          />
-          <Text size="small" tone="tertiary">
-            X-axis: age, from today through {END_AGE}. Until retirement the green line is the 401(k)
-            {savings > 0 ? " plus other savings" : ""}. Wages are not on the chart. The dotted line at retirement is
-            the drop from that balance, before tax, down to what is left after tax, the land and setup, and the first
-            year of costs. After that, All at once and Split are cash in the bank. As needed is what is
-            still in the 401(k). The 401(k) grows at {p.ret}%. Cash earns {p.cashReturn ?? 0}% interest. At 0%, interest
-            adds nothing, but a surplus of Social Security over the year's costs still stacks up, and a shortage still
-            spends the pile down. Tax on interest is ignored. Federal tax includes Social Security in a year the IRS
-            worksheet taxes it, and the brackets rise with that line's inflation. Below $0 is the running shortfall. The scale stops at
-            -$100,000, and a deeper shortfall runs off the bottom.
-          </Text>
-          <Grid columns={4} gap={12}>
-            <Stat value={lastsLabel(normal)} label="Normal: money lasts to age" tone={shortfall ? "danger" : "success"} />
-            <Stat value={lastsLabel(ssCutSim)} label={`Social Security cut in ${EST.ssCutYear}: lasts to age`} tone={covers(ssCutSim, goal) ? "success" : "danger"} />
-            <Stat value={lastsLabel(highInf)} label="High inflation: lasts to age" tone={covers(highInf, goal) ? "success" : "danger"} />
-            <Stat value={kMoney(collapse.stranded ?? 0)} label={`Collapse: cash stranded at ${p.collapseAge}`} tone="warning" />
-          </Grid>
-          <Callout tone="info" title="What moves the outcome most">
-            Try these one at a time and watch the age change. First, set Withdrawal to "As needed": you pay less tax and
-            keep subsidized health insurance in later years. Second, add $15–20K/yr of part-time income until 62.
-            Third, click "Lean build".             Fourth, enter your real Social Security figure from ssa.gov at the age you plan to claim. The $1,400/mo
-            default is a placeholder for one person at 62. Changing the claim age recalculates it. Use roughly $2,000 combined for a couple
-            where one spouse claims a spousal benefit.
-          </Callout>
-          <Callout tone={savings > 0 ? "success" : "neutral"} title="Other savings">
-            {savings > 0
-              ? isLump(p)
-                ? `Your ${money(savings)} of savings is added to the cash on hand. It lasts to age ${lastsLabel(normal)} with the savings and ${lastsLabel(noSavingsSim)} without. With "All at once" or "Split" withdrawals the whole 401(k) is taxed anyway, so savings can't lower that tax. "As needed" spends the savings first, which shrinks the year-one taxable withdrawal.`
-                : `The plan spends your ${money(savings)} of savings before touching the 401(k). Savings come out tax-free, so the year-one 401(k) withdrawal drops and so does its tax (${kMoney(normal.year0Tax)} vs ${kMoney(noSavingsSim.year0Tax)} without savings). Lower reported income also helps you keep ACA subsidies. Money lasts to age ${lastsLabel(normal)} with the savings and ${lastsLabel(noSavingsSim)} without.`
-              : 'Enter cash, bank, brokerage or Roth IRA money in "Other savings" under Assumptions.'}{" "}
-            Roth IRA contributions come out tax- and penalty-free at any age, but Roth earnings taken before 59½ are
-            taxed and penalized. In a brokerage account only the gains are taxable, usually at 0% long-term capital
-            gains rates at this income. Both are treated as tax-free here.
-          </Callout>
-        </Stack>
+        <div className="plan-results">
+          <Card>
+            <CardHeader>Money remaining by age</CardHeader>
+            <CardBody>
+              <Stack gap={10}>
+                <LineChart
+                  categories={ages}
+                  series={[
+                    { name: "401(k) before the withdrawals", data: beforeWithdrawals, tone: "success" },
+                    { name: `Normal economy (${p.inflation}% inflation)${p.ssCut ? ", Social Security cut" : ""}`, data: afterLine(normal), tone: "info" },
+                    ...(roughSim
+                      ? [{ name: "Rough market start", data: afterLine(roughSim), color: "purple" as const, dashed: true }]
+                      : []),
+                    ...(p.ssCut
+                      ? []
+                      : [{ name: `Social Security cut to ${EST.ssCutPct}% in ${EST.ssCutYear}`, data: afterLine(ssCutSim), tone: "danger" as const }]),
+                    { name: `High inflation (${EST.highInflation}%)`, data: afterLine(highInf), tone: "warning" },
+                    { name: `Collapse at ${p.collapseAge} (cash frozen)`, data: afterLine(collapse), tone: "neutral" },
+                  ]}
+                  valuePrefix="$"
+                  fluid
+                  yFloor={0}
+                  drop={
+                    nestAtRetirement != null && cashAtRetirement != null
+                      ? { x: String(retireAt), from: nestAtRetirement, to: cashAtRetirement }
+                      : undefined
+                  }
+                />
+                <Grid columns={3} gap={12}>
+                  <Stat value={lastsLabel(normal)} label="Normal: lasts to age" tone={shortfall ? "danger" : "success"} />
+                  <Stat
+                    value={odds ? (odds.cashOnly ? "n/a" : `${oddsPct}%`) : "…"}
+                    label={odds?.cashOnly ? "Market odds (cash plan)" : `Chance it lasts to ${goal}`}
+                    tone={odds && !odds.cashOnly ? oddsTone : undefined}
+                  />
+                  <Stat
+                    value={roughSim ? lastsLabel(roughSim) : "n/a"}
+                    label="Rough market start: lasts to age"
+                    tone={roughSim ? (covers(roughSim, goal) ? "success" : "danger") : undefined}
+                  />
+                  <Stat value={lastsLabel(ssCutSim)} label={`Social Security cut in ${EST.ssCutYear}`} tone={covers(ssCutSim, goal) ? "success" : "danger"} />
+                  <Stat value={lastsLabel(highInf)} label="High inflation: lasts to age" tone={covers(highInf, goal) ? "success" : "danger"} />
+                  <Stat value={kMoney(collapse.stranded ?? 0)} label={`Collapse: cash stranded at ${p.collapseAge}`} tone="warning" />
+                </Grid>
+                <details className="method">
+                  <summary>Reading the chart</summary>
+                  <Text size="small" tone="tertiary">
+                    Age runs from today through {END_AGE}. Until retirement the green line is the 401(k)
+                    {savings > 0 ? " plus other savings" : ""}; wages aren't shown. The dotted drop at retirement is the
+                    401(k) before tax down to what's left after tax, the land and setup, and the first year of costs.
+                    After that, "All at once" and "Split" are cash in the bank and "As needed" is what's still in the
+                    401(k). The 401(k) grows {p.ret}% a year and cash earns {p.cashReturn ?? 0}%. Each line stops at $0
+                    the year the money runs out.
+                    {roughSim
+                      ? ` The rough start gives the 401(k) a ${Math.round(p.ret - 2 * (p.vol ?? 10))}% return in year one and ${Math.round(p.ret - (p.vol ?? 10))}% in years two and three, then ${p.ret}% after that.`
+                      : ""}
+                    {odds && !odds.cashOnly
+                      ? ` Market odds: in ${oddsPct}% of ${odds.runs} replays with random yearly returns the money lasted past ${goal}.${odds.worstTenth !== null ? ` In the worst tenth it ran out by ${odds.worstTenth}.` : ""}`
+                      : ""}
+                  </Text>
+                </details>
+              </Stack>
+            </CardBody>
+          </Card>
+        </div>
       </div>
 
+      <Grid columns={2} gap={16} align="start">
+          <Callout tone="info" title="What moves the outcome most">
+          Try these one at a time and watch the age change. First, set Withdrawal to "As needed": you pay less tax and
+          keep subsidized health insurance in later years. Second, add $15–20K/yr of part-time income until 62.
+          Third, click "Lean build". Fourth, enter your real Social Security figure from ssa.gov at the age you plan
+          to claim. The $1,400/mo default is a placeholder for one person at 62. Changing the claim age recalculates
+          it. With two adults, enter the spouse's check in its own field.
+        </Callout>
+        <Callout tone={savings > 0 ? "success" : "neutral"} title="Other savings">
+          {savings > 0
+            ? isLump(p)
+              ? `Your ${money(savings)} of savings is added to the cash on hand. It lasts to age ${lastsLabel(normal)} with the savings and ${lastsLabel(noSavingsSim)} without. With "All at once" or "Split" withdrawals the whole 401(k) is taxed anyway, so savings can't lower that tax. "As needed" spends the savings first, which shrinks the year-one taxable withdrawal.`
+              : `The plan spends your ${money(savings)} of savings before touching the 401(k). Savings come out tax-free, so the year-one 401(k) withdrawal drops and so does its tax (${kMoney(normal.year0Tax)} vs ${kMoney(noSavingsSim.year0Tax)} without savings). Lower reported income also helps you keep ACA subsidies. Money lasts to age ${lastsLabel(normal)} with the savings and ${lastsLabel(noSavingsSim)} without.`
+            : 'Enter cash, bank, brokerage or Roth IRA money in "Other savings" under Assumptions.'}{" "}
+          Roth IRA contributions come out tax- and penalty-free at any age, but Roth earnings taken before 59½ are
+          taxed and penalized. In a brokerage account only the gains are taxable, usually at 0% long-term capital
+          gains rates at this income. Both are treated as tax-free here.
+        </Callout>
+      </Grid>
+
       <Stack gap={12}>
-        <H2>Two what-ifs: a Social Security cut and seller financing</H2>
+        <H2 id="sec-whatifs">Two what-ifs: a Social Security cut and seller financing</H2>
         <Grid columns={2} gap={20} align="start">
           <Card>
             <CardHeader>Social Security cut to {EST.ssCutPct}% in {EST.ssCutYear}</CardHeader>
@@ -1411,7 +1603,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       </Stack>
 
       <Stack gap={12}>
-        <H2>Red states compared, after the 2026 midterms</H2>
+        <H2 id="sec-states">Red states compared, after the 2026 midterms</H2>
         <Text tone="secondary">
           Democrats had a strong night on November 3. They flipped governorships in Texas, Georgia, Iowa, Ohio, Nevada
           and Alaska, and Kansas was still leaning Democratic as of November 4. The states below are ones where
@@ -1489,7 +1681,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       </Stack>
 
       <Stack gap={10}>
-        <H2>Where the {savings > 0 ? "401(k) and savings go" : "401(k) goes"}</H2>
+        <H2 id="sec-allocation">Where the {savings > 0 ? "401(k) and savings go" : "401(k) goes"}</H2>
         <UsageBar
           total={allocTotal}
           topLeftLabel={
@@ -1538,7 +1730,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       </Stack>
 
       <Stack gap={12}>
-        <H2>Moving from Texas: taxes and residency</H2>
+        <H2 id="sec-texas">Moving from Texas: taxes and residency</H2>
         <Text tone="secondary">
           Texas has no state income tax, and federal law (4 U.S.C. § 114) bars other states from taxing retirement
           income paid to someone who isn't their resident. Any 401(k) money paid out while you still live in Texas is
@@ -1587,7 +1779,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       </Stack>
 
       <Stack gap={12}>
-        <H2>One-time setup costs</H2>
+        <H2 id="sec-setup">One-time setup costs</H2>
         <Grid columns={2} gap={20} align="start">
           <Stack gap={8}>
             <Row gap={8} align="center">
@@ -1614,7 +1806,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       </Stack>
 
       <Stack gap={12}>
-        <H2>Monthly living costs (normal economy, today's dollars)</H2>
+        <H2 id="sec-living">Monthly living costs (normal economy, today's dollars)</H2>
         <Text tone="secondary">
           Every cost is editable as $/mo or $/yr, and the plan recomputes as you type. Start from a preset, then adjust
           any line. The presets leave property tax, propane, firewood and electricity alone, because those come from
@@ -1641,7 +1833,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
             return (
               <Stat
                 key={id}
-                value={`${money(annualCost(r, 60, p, false) / 12)}/mo`}
+                value={`${money(annualCost(r, 60, p, healthAtAge(60)) / 12)}/mo`}
                 label={`${LIVING_PRESETS[id].label}: ${LIVING_PRESETS[id].note}`}
               />
             );
@@ -1664,8 +1856,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               striped
             />
             <Text size="small" tone="tertiary">
-              Monthly figures are rounded to the dollar. Health insurance before 65 depends on income: with
-              "As needed" withdrawals and modest income, a subsidized ACA bronze plan can cost under $50/mo.
+              Monthly figures are rounded to the dollar.
+              {p.acaByIncome === false
+                ? " Health insurance before 65 uses the line above."
+                : " The health insurance line above is only used if pricing from income is off in Assumptions; the plan prices each year from income instead."}
             </Text>
           </Stack>
           <Stack gap={10}>
@@ -1683,13 +1877,25 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
               <Stat value={money(steadyPost65)} label="Total/yr at 65+ (Medicare)" />
             </Grid>
             <Callout tone="warning" title="Health insurance is the swing cost">
-              ACA subsidies are based on income. In any year you withdraw more than about {money(acaCliff(p))} (400%
-              of the poverty line for {peopleLabel(adultsOf(p))}), you lose the subsidy and pay full price, modeled here
-              as {money(p.acaUnsub)}/yr per person at {startAge(p)}. {loc.medicaid}.
+              {p.acaByIncome === false
+                ? `The plan uses the flat health line, and full price (${money(p.acaUnsub)}/yr per person) in any year income passes about ${money(acaCliff(p))}, 400% of the poverty line for ${peopleLabel(adultsOf(p))}. `
+                : `Before 65 the premium is priced from each year's income with the 2026 subsidy table. Above about ${money(acaCliff(p))} (400% of the poverty line for ${peopleLabel(adultsOf(p))}) there's no subsidy, and full price is ${money(p.acaUnsub)}/yr per person. `}
+              {loc.medicaid}.
               {st.medicaid
-                ? " Starting in 2027, federal law adds work or volunteer requirements for expansion adults under 65."
+                ? " Starting in 2027, federal law adds work or volunteer requirements for expansion adults under 65, and the state can recover Medicaid costs from the estate of anyone who got benefits at 55 or older."
                 : ""}{" "}
               Check the current rules before you rely on either.
+              {pre65Health.length > 0 && (
+                <div className="health-strip">
+                  {pre65Health.map((h, i) => (
+                    <div key={i} className={`health-year ${h.kind}`}>
+                      <div className="health-age">{retireAt + i}</div>
+                      <div className="health-kind">{HEALTH_LABEL[h.kind]}</div>
+                      <div className="health-cost">{money(h.cost / 12)}/mo</div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </Callout>
           </Stack>
         </Grid>
@@ -1697,7 +1903,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
 
       <Stack gap={12}>
         <Row gap={12} align="center">
-          <H2>Estimates behind the numbers</H2>
+          <H2 id="sec-estimates">Estimates behind the numbers</H2>
           <Pill size="sm" onClick={resetEst}>Reset estimates</Pill>
         </Row>
         <Text tone="secondary">
@@ -1789,7 +1995,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       </Stack>
 
       <Stack gap={12}>
-        <H2>Power and Starlink: {pm.label}</H2>
+        <H2 id="sec-power">Power and Starlink: {pm.label}</H2>
         <Text tone="secondary">
           {pm.summary} Change the setup with "Power setup" in Assumptions or with the buttons below. That rewrites the
           grid line, solar/battery and electricity costs in the plan, and you can still edit each number afterward.
