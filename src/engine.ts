@@ -21,6 +21,10 @@ export type Params = {
   rule55: boolean;
   ssMonthly: number;
   ssAge: number;
+  /** Spouse's monthly check in today's dollars (their own benefit or a spousal benefit). Counted with two adults. */
+  ssSpouseMonthly?: number;
+  /** Your age when the spouse's check starts. */
+  ssSpouseStart?: number;
   /** Monthly benefit at full retirement age. The check at ssAge is derived from this. */
   ssPia?: number;
   otherIncome: number;
@@ -33,6 +37,12 @@ export type Params = {
   contingency: number;
   acaUnsub: number;
   collapseAge: number;
+  /** Estimate the pre-65 ACA premium from income each year. False uses the flat health line. Missing means true. */
+  acaByIncome?: boolean;
+  /** In an expansion state, take Medicaid in low-income years. Missing means true. */
+  useMedicaid?: boolean;
+  /** Typical yearly swing (standard deviation) of 401(k) returns, in percent. Missing means 10. */
+  vol?: number;
   hardening: boolean;
   hunting: boolean;
   deerPerYear: number;
@@ -637,6 +647,8 @@ export const DEFAULT_PARAMS: Params = {
   rule55: true,
   ssMonthly: 1400,
   ssAge: 62,
+  ssSpouseMonthly: 0,
+  ssSpouseStart: 67,
   otherIncome: 0,
   otherUntil: 62,
   ret: 4,
@@ -645,6 +657,9 @@ export const DEFAULT_PARAMS: Params = {
   contingency: 10,
   acaUnsub: 11000,
   collapseAge: 60,
+  acaByIncome: true,
+  useMedicaid: true,
+  vol: 10,
   hardening: true,
   hunting: true,
   deerPerYear: 3,
@@ -721,7 +736,6 @@ export const recAmount = (rec: Record<string, number>, id: string, p: Params) =>
   (rec[id] ?? 0) * (PER_PERSON_RECURRING.has(id) ? adultsOf(p) : 1);
 export const upAmount = (up: Record<string, number>, id: string, p: Params) =>
   (up[id] ?? 0) * (PER_PERSON_UPFRONT.has(id) ? adultsOf(p) : 1);
-export const acaCliff = (p: Params) => 4 * (15650 + 5500 * (adultsOf(p) - 1));
 
 export type Group = "core" | "hardening" | "hunting" | "food";
 
@@ -924,26 +938,30 @@ export function ageNowFrom(p: { ageNow?: number; retireAge?: number; startYear?:
   return clampPlanAge((p.retireAge ?? 58) - yearsToRetire(p));
 }
 
-export const DEFERRAL_BASE = 23500;
-export const DEFERRAL_CATCHUP = 31000;
+/** 2026 employee deferral limits (IRS Notice 2025-67). Employer match is on top. */
+export const DEFERRAL_BASE = 24500;
+export const DEFERRAL_CATCHUP = 32500;
+/** SECURE 2.0 super catch-up for ages 60 through 63. */
+export const DEFERRAL_SUPER = 35750;
+
+export function deferralLimit(age: number) {
+  if (age >= 60 && age <= 63) return DEFERRAL_SUPER;
+  return age >= 50 ? DEFERRAL_CATCHUP : DEFERRAL_BASE;
+}
 
 export function deferralNote(p: Params, contrib: number) {
   const years = yearsToRetire(p);
-  if (years <= 0 || contrib <= DEFERRAL_BASE) return "";
+  if (years <= 0) return "";
   const now = ageNowFrom(p);
-  const lastAge = now + years - 1;
-  if (now >= 50) {
-    return contrib > DEFERRAL_CATCHUP
-      ? `The 2026 employee deferral limit at age ${now} is $31,000. Employer match can sit on top of that.`
-      : "";
+  let over: number | null = null;
+  for (let age = now; age < now + years; age++) {
+    if (contrib > deferralLimit(age)) {
+      over = age;
+      break;
+    }
   }
-  if (lastAge >= 50) {
-    const yearTurns50 = THIS_YEAR + (50 - now);
-    return contrib > DEFERRAL_CATCHUP
-      ? `The 2026 employee deferral limit is $23,500 until age 50, then $31,000. This contribution is above both. Employer match can sit on top of that.`
-      : `The 2026 employee deferral limit is $23,500 until you turn 50 in ${yearTurns50}, then $31,000. Employer match can sit on top of that.`;
-  }
-  return `The 2026 employee deferral limit at age ${now} is $23,500. It becomes $31,000 at age 50. Employer match can sit on top of that.`;
+  if (over === null) return "";
+  return `This is above the 2026 employee deferral limit at age ${over} ($${deferralLimit(over).toLocaleString("en-US")}). The limits are $24,500 under 50, $32,500 at 50 and up, and $35,750 at 60 through 63. Employer match can sit on top of that.`;
 }
 export const rule55Applies = (p: Params) => p.rule55 && startAge(p) >= 55;
 export const END_AGE = 95;
@@ -957,6 +975,7 @@ export function yearsToRetire(p: { startYear?: number }) {
 export function fraMonths(birthYear: number): number {
   if (birthYear <= 1937) return 65 * 12;
   if (birthYear >= 1960) return 67 * 12;
+  if (birthYear >= 1955) return 66 * 12 + (birthYear - 1954) * 2;
   if (birthYear >= 1943) return 66 * 12;
   return 65 * 12 + (birthYear - 1937) * 2;
 }
@@ -1029,9 +1048,17 @@ export function nestEgg(p: Params) {
 }
 export const goalOf = (p: Params) => Math.min(END_AGE, Math.max(startAge(p) + 1, Math.round(p.goalAge ?? 85)));
 
-export function fedTax(income: number, status: Status, age: number, factor = 1): number {
+export function fedTax(income: number, status: Status, age: number, factor = 1, year = 0): number {
+  const people = status === "mfj" ? 2 : 1;
   const extraStd = (age >= 65 ? (status === "mfj" ? 3300 : 2050) : 0) * factor;
-  const taxable = Math.max(0, income - FED[status].std * factor - extraStd);
+  // One Big Beautiful Bill Act senior deduction: $6,000 per person 65+ for tax years 2025–2028,
+  // less 6% of income above $75,000 ($150,000 joint). Fixed dollars, not indexed. Like the
+  // extra standard deduction above, a joint return assumes both spouses are the same age.
+  const senior =
+    age >= 65 && year >= 2025 && year <= 2028
+      ? Math.max(0, 6000 - 0.06 * Math.max(0, income - (status === "mfj" ? 150000 : 75000))) * people
+      : 0;
+  const taxable = Math.max(0, income - FED[status].std * factor - extraStd - senior);
   let tax = 0;
   let prev = 0;
   for (const [top, rate] of FED[status].brackets) {
@@ -1043,11 +1070,11 @@ export function fedTax(income: number, status: Status, age: number, factor = 1):
   return tax;
 }
 
-/** IRS Publication 915. The $25k/$34k and $32k/$44k thresholds are not indexed by law; the plan scales them with the chart line's inflation so a benefit that is untaxed on day one stays untaxed in real terms. */
-export function taxableSocialSecurity(ss: number, otherIncome: number, status: Status, factor: number): number {
+/** IRS Publication 915. The $25k/$34k and $32k/$44k thresholds are fixed by law and are not indexed for inflation, so more of the benefit becomes taxable as prices rise. */
+export function taxableSocialSecurity(ss: number, otherIncome: number, status: Status): number {
   if (ss <= 0) return 0;
-  const base = (status === "mfj" ? 32000 : 25000) * factor;
-  const upper = (status === "mfj" ? 44000 : 34000) * factor;
+  const base = status === "mfj" ? 32000 : 25000;
+  const upper = status === "mfj" ? 44000 : 34000;
   const combined = otherIncome + ss * 0.5;
   if (combined <= base) return 0;
   const tier1 = Math.min(ss * 0.5, Math.min(upper - base, combined - base) * 0.5);
@@ -1058,6 +1085,9 @@ export function taxableSocialSecurity(ss: number, otherIncome: number, status: S
 export function stateTax(w: number, p: Params): number {
   return STATES[stateOf(p)].tax(w, p.status === "mfj", Math.max(0, w - FED[p.status].std));
 }
+
+/** Calendar year of a given age in the plan. */
+export const yearAt = (p: Params, age: number) => p.startYear + (age - startAge(p));
 
 export function taxOnWithdrawal(
   w: number,
@@ -1070,10 +1100,11 @@ export function taxOnWithdrawal(
 ) {
   const ordinary = Math.max(0, w) + Math.max(0, other);
   const fed = fedTax(
-    ordinary + taxableSocialSecurity(Math.max(0, ss), ordinary, p.status, factor),
+    ordinary + taxableSocialSecurity(Math.max(0, ss), ordinary, p.status),
     p.status,
     age,
     factor,
+    yearAt(p, age),
   );
   // Scale dollar exemptions and brackets by computing the tax in retirement-year dollars.
   const ok = inTexas || factor <= 0 ? 0 : stateTax(ordinary / factor, p) * factor;
@@ -1081,12 +1112,17 @@ export function taxOnWithdrawal(
   return { fed, ok, penalty, total: fed + ok + penalty };
 }
 
+/** Yearly Social Security for the household in year t: your check plus a spouse's own or spousal check. */
 export function ssPay(p: Params, t: number, infPct: number): number {
-  if (startAge(p) + t < p.ssAge) return 0;
+  const age = startAge(p) + t;
   const f = Math.pow(1 + infPct / 100, t);
   const cut = p.ssCut && p.startYear + t >= EST.ssCutYear ? EST.ssCutPct / 100 : 1;
-  return Math.max(0, p.ssMonthly) * 12 * f * cut;
+  const own = age >= p.ssAge ? Math.max(0, p.ssMonthly) : 0;
+  const spouse = hasSpouse(p) && age >= (p.ssSpouseStart ?? 67) ? Math.max(0, p.ssSpouseMonthly ?? 0) : 0;
+  return (own + spouse) * 12 * f * cut;
 }
+
+export const hasSpouse = (p: Params) => adultsOf(p) >= 2;
 
 export function otherPay(p: Params, t: number): number {
   return startAge(p) + t < p.otherUntil ? Math.max(0, p.otherIncome) : 0;
@@ -1124,16 +1160,69 @@ export function grossUp(
   let w = Math.max(0, need);
   for (let i = 0; i < 40; i++) {
     const extra = taxOnWithdrawal(w, p, age, inTexas, ss, other, factor).total - base;
-    w = Math.max(0, need + extra);
+    const next = Math.max(0, need + extra);
+    if (Math.abs(next - w) < 0.5) return next;
+    w = next;
   }
   return w;
 }
 
+/** 2025 HHS poverty guideline, which sets 2026 marketplace subsidies. Held in today's dollars. */
+export const FPL_BASE = 15650;
+export const FPL_EXTRA = 5500;
+export const fplOf = (p: Params) => FPL_BASE + FPL_EXTRA * (adultsOf(p) - 1);
+
+/** Rev. Proc. 2025-25 applicable percentage table for 2026, after the enhanced credits ended. [low, high, start %, end %] of the poverty line. */
+const ACA_TABLE: Array<[number, number, number, number]> = [
+  [0, 1.33, 0.021, 0.021],
+  [1.33, 1.5, 0.0314, 0.0419],
+  [1.5, 2, 0.0419, 0.066],
+  [2, 2.5, 0.066, 0.0844],
+  [2.5, 3, 0.0844, 0.0996],
+  [3, 4, 0.0996, 0.0996],
+];
+
+/** Share of income a household pays for the benchmark silver plan, or null above 400% of the poverty line (no subsidy). */
+export function acaPercent(ratio: number): number | null {
+  if (ratio > 4) return null;
+  for (const [lo, hi, a, b] of ACA_TABLE) {
+    if (ratio < hi || hi === 4) return a + ((Math.max(lo, ratio) - lo) / (hi - lo)) * (b - a);
+  }
+  return null;
+}
+
+export type HealthKind = "medicaid" | "subsidized" | "full" | "gap";
+export type HealthPlan = { kind: HealthKind; cost: number; ratio: number };
+
+/**
+ * Pre-65 household health cost in today's dollars for a year with this ACA income (MAGI, today's dollars).
+ * ACA income counts every withdrawal, other income, interest, and all of Social Security, taxable or not.
+ */
+export function acaFor(magi: number, p: Params): HealthPlan {
+  const full = Math.max(0, p.acaUnsub) * adultsOf(p);
+  const ratio = Math.max(0, magi) / fplOf(p);
+  const expanded = STATES[stateOf(p)].medicaid;
+  if (expanded && ratio < 1.38) {
+    // Anyone eligible for Medicaid can't get a marketplace subsidy, so declining Medicaid means full price.
+    return p.useMedicaid === false ? { kind: "full", cost: full, ratio } : { kind: "medicaid", cost: 0, ratio };
+  }
+  if (!expanded && ratio < 1) return { kind: "gap", cost: full, ratio };
+  const pct = acaPercent(ratio);
+  if (pct === null) return { kind: "full", cost: full, ratio };
+  return { kind: "subsidized", cost: Math.min(full, pct * Math.max(0, magi)), ratio };
+}
+
+export const acaCliff = (p: Params) => 4 * fplOf(p);
+
+/**
+ * Yearly living cost in today's dollars.
+ * health: false = the flat subsidized ACA line, true = full price, a number = that household premium (today's dollars).
+ */
 export function annualCost(
   rec: Record<string, number>,
   age: number,
   p: Params,
-  unsubsidizedHealth: boolean,
+  health: boolean | number,
 ): number {
   let sum = 0;
   for (const item of RECURRING) {
@@ -1141,8 +1230,11 @@ export function annualCost(
     if (item.rule === "post65" && age < 65) continue;
     if (item.id === "hunt" && !p.hunting) continue;
     if (item.id === "rvreserve" && housingOf(p) === "house") continue;
-    sum +=
-      item.id === "aca" && unsubsidizedHealth ? p.acaUnsub * adultsOf(p) : recAmount(rec, item.id, p);
+    if (item.id === "aca") {
+      sum += typeof health === "number" ? health : health ? p.acaUnsub * adultsOf(p) : recAmount(rec, item.id, p);
+      continue;
+    }
+    sum += recAmount(rec, item.id, p);
   }
   return (sum - foodOffset(rec, p).used) * (1 + p.contingency / 100);
 }
@@ -1178,6 +1270,8 @@ export type SimResult = {
   year0Cost: number;
   year0FromSavings: number;
   stranded: number | null;
+  /** Pre-65 health coverage each simulated year, for the health-cost table. */
+  health: HealthPlan[];
 };
 
 
@@ -1190,7 +1284,13 @@ export function loanTerms(p: Params, land: number) {
   return { financed, payment, years: n, interest: payment * n - financed };
 }
 
-export type SimAdjust = { spendCut?: number; extraIncome?: number; incomeUntil?: number };
+export type SimAdjust = {
+  spendCut?: number;
+  extraIncome?: number;
+  incomeUntil?: number;
+  /** Yearly 401(k) return for each retirement year, as a fraction. Missing years use the plan's return. */
+  returns?: number[];
+};
 
 export function simulate(
   p: Params,
@@ -1207,6 +1307,8 @@ export function simulate(
   const inf = inflationPct / 100;
   const cliff = acaCliff(p);
   const egg = nestEgg(p);
+  const parts = p.strategy === "split" ? 2 : 1;
+  const slice = egg.k401 / parts;
   let balance = egg.k401;
   let cash = egg.savings;
   let year0Gross = 0;
@@ -1215,7 +1317,10 @@ export function simulate(
   let year0FromSavings = 0;
   let depletedAge: number | null = null;
   let stranded: number | null = null;
+  // Interest earned on cash last year. It is already in the balance; it's taxed and counted as ACA income the next year.
+  let lastInterest = 0;
   const balances: number[] = [];
+  const health: HealthPlan[] = [];
 
   if (isLump(p)) {
     year0Gross = egg.k401;
@@ -1237,41 +1342,65 @@ export function simulate(
       continue;
     }
     const f = Math.pow(1 + inf, t);
-    const ssFactor = p.ssCut && p.startYear + t >= EST.ssCutYear ? EST.ssCutPct / 100 : 1;
     const bonus = adjust?.extraIncome && age <= (adjust.incomeUntil ?? -1) ? adjust.extraIncome : 0;
     const otherOrdinary = (age < p.otherUntil ? p.otherIncome : 0) + bonus;
-    const ssCheck = (age >= p.ssAge ? p.ssMonthly * 12 * f * ssFactor : 0);
+    const ssCheck = ssPay(p, t, inflationPct);
     const income = ssCheck + otherOrdinary;
+    const taxOther = otherOrdinary + lastInterest;
     const extra = (t === 0 ? upfront - loan.financed : 0) + (t < loan.years ? loan.payment : 0);
+    /** Health setting for a year with this ACA income in that year's dollars. */
+    const healthAt = (magi: number): boolean | number => {
+      if (age >= 65) return false;
+      if (p.acaByIncome === false) return magi > cliff * f;
+      return acaFor(magi / f, p).cost;
+    };
+    const recordHealth = (magi: number) =>
+      health.push(age >= 65 ? { kind: "full", cost: 0, ratio: 0 } : acaFor(magi / f, p));
 
     if (isLump(p)) {
-      const unsub = t === 0 || (t === 1 && p.strategy === "split") || balance * rCash > cliff;
-      const living = annualCost(rec, age, p, unsub) * f;
+      const w = t < parts ? slice : 0;
+      const magi = w + income + lastInterest;
+      recordHealth(magi);
+      const living = annualCost(rec, age, p, healthAt(magi)) * f;
       const cost = living - Math.min(living, Math.max(0, adjust?.spendCut ?? 0) * f);
       if (t === 0) year0Cost = cost;
       // Withdrawal-year tax, including that year's Social Security, is already in year0Tax.
-      const laterTax =
-        t >= (p.strategy === "split" ? 2 : 1)
-          ? taxOnWithdrawal(0, p, age, false, ssCheck, otherOrdinary, f).total
+      const laterTax = t >= parts ? taxOnWithdrawal(0, p, age, false, ssCheck, taxOther, f).total : 0;
+      // year0Tax left out interest, which only exists in the second year of a split.
+      const interestTax =
+        t < parts && lastInterest > 0
+          ? taxOnWithdrawal(w, p, age, p.txMove, ssCheck, taxOther, f).total -
+            taxOnWithdrawal(w, p, age, p.txMove, ssCheck, otherOrdinary, f).total
           : 0;
-      const after = balance - (cost - income + extra + laterTax);
-      balance = after > 0 ? after * (1 + rCash) : after;
+      const after = balance - (cost - income + extra + laterTax + interestTax);
+      lastInterest = after > 0 ? after * rCash : 0;
+      balance = after + lastInterest;
     } else {
       const inTexas = t === 0 && p.txMove;
-      const plan = (unsub: boolean) => {
-        const living = annualCost(rec, age, p, unsub) * f;
+      const growth = adjust?.returns?.[t] ?? r401;
+      const plan = (h: boolean | number) => {
+        const living = annualCost(rec, age, p, h) * f;
         const cost = living - Math.min(living, Math.max(0, adjust?.spendCut ?? 0) * f);
         const gap = cost - income + extra;
-        const baseTax = taxOnWithdrawal(0, p, age, inTexas, ssCheck, otherOrdinary, f).total;
+        const baseTax = taxOnWithdrawal(0, p, age, inTexas, ssCheck, taxOther, f).total;
         const gapTax = gap + baseTax;
         const fromCash = Math.min(cash, Math.max(0, gapTax));
         const need = gapTax - fromCash;
-        const w = need > 0 && balance > 0 ? grossUp(need, p, age, inTexas, ssCheck, otherOrdinary, f) : 0;
-        const tax = taxOnWithdrawal(w, p, age, inTexas, ssCheck, otherOrdinary, f).total;
+        const w = need > 0 && balance > 0 ? grossUp(need, p, age, inTexas, ssCheck, taxOther, f) : 0;
+        const tax = taxOnWithdrawal(w, p, age, inTexas, ssCheck, taxOther, f).total;
         return { cost, gapTax, fromCash, need, w, tax };
       };
-      let s = plan(false);
-      if (s.w > cliff) s = plan(true);
+      // The health premium depends on income and the withdrawal depends on the premium. Settle it in a few
+      // passes; if it won't settle (near a subsidy edge), keep the larger withdrawal.
+      const magiOf = (w: number) => w + income + lastInterest;
+      let s = plan(healthAt(magiOf(0)));
+      for (let i = 0; i < 8; i++) {
+        const next = plan(healthAt(magiOf(s.w)));
+        const done = Math.abs(next.w - s.w) < 1;
+        s = i === 7 && !done && s.w > next.w ? s : next;
+        if (done) break;
+      }
+      recordHealth(magiOf(s.w));
       if (t === 0) {
         year0Gross = s.w;
         year0Tax = s.tax;
@@ -1281,17 +1410,85 @@ export function simulate(
       cash -= s.fromCash;
       if (s.gapTax < 0) cash += -s.gapTax;
       const after = balance - (balance > 0 ? s.w : Math.max(0, s.need));
-      balance = after > 0 ? after * (1 + r401) : after;
-      cash *= 1 + rCash;
+      balance = after > 0 ? after * (1 + growth) : after;
+      lastInterest = cash > 0 ? cash * rCash : 0;
+      cash += lastInterest;
     }
     const total = balance + cash;
     if (total <= 0 && depletedAge === null) depletedAge = age;
     balances.push(total);
   }
-  return { balances, depletedAge, year0Gross, year0Tax, year0Cost, year0FromSavings, stranded };
+  return { balances, depletedAge, year0Gross, year0Tax, year0Cost, year0FromSavings, stranded, health };
 }
 
 export const covers = (sim: SimResult, goal: number) => sim.depletedAge === null || sim.depletedAge > goal;
+
+/** Small seeded random generator, so the market odds don't jump around between redraws. */
+export function seededRandom(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const RETIRE_YEARS = (p: Params) => END_AGE - startAge(p) + 1;
+
+/** A rough start: the 401(k) loses two normal swings below its average in year one and one swing in years two and three. */
+export function badStartReturns(p: Params): number[] {
+  const mean = (p.ret ?? 0) / 100;
+  const sd = Math.max(0, p.vol ?? 10) / 100;
+  return Array.from({ length: RETIRE_YEARS(p) }, (_, t) => (t === 0 ? mean - 2 * sd : t < 3 ? mean - sd : mean));
+}
+
+export function randomReturns(p: Params, rand: () => number): number[] {
+  const mean = (p.ret ?? 0) / 100;
+  const sd = Math.max(0, p.vol ?? 10) / 100;
+  return Array.from({ length: RETIRE_YEARS(p) }, () => {
+    const z = Math.sqrt(-2 * Math.log(1 - rand())) * Math.cos(2 * Math.PI * rand());
+    return Math.max(-0.6, mean + sd * z);
+  });
+}
+
+export type MarketOdds = {
+  /** Share of runs where money lasts past the goal age, 0 to 1. */
+  chance: number;
+  /** Age money runs out in the worst tenth of runs, or null if even those last past END_AGE. */
+  worstTenth: number | null;
+  /** True when the plan holds cash (lump or split), so market swings don't change it. */
+  cashOnly: boolean;
+  runs: number;
+};
+
+export function marketOdds(
+  p: Params,
+  rec: Record<string, number>,
+  upfront: number,
+  inflationPct: number,
+  land: number,
+  goal: number,
+  runs = 300,
+  seed = 2026,
+): MarketOdds {
+  if (isLump(p) || (p.vol ?? 10) <= 0) {
+    const sim = simulate(p, rec, upfront, inflationPct, null, land);
+    return { chance: covers(sim, goal) ? 1 : 0, worstTenth: sim.depletedAge, cashOnly: isLump(p), runs: 1 };
+  }
+  const rand = seededRandom(seed);
+  const ages: number[] = [];
+  let ok = 0;
+  for (let i = 0; i < runs; i++) {
+    const sim = simulate(p, rec, upfront, inflationPct, null, land, { returns: randomReturns(p, rand) });
+    if (covers(sim, goal)) ok++;
+    ages.push(sim.depletedAge ?? END_AGE + 1);
+  }
+  ages.sort((a, b) => a - b);
+  const tenth = ages[Math.floor(runs * 0.1)];
+  return { chance: ok / runs, worstTenth: tenth > END_AGE ? null : tenth, cashOnly: false, runs };
+}
 
 export function leastThatCovers(probe: (n: number) => boolean): number | null {
   if (probe(0)) return 0;
