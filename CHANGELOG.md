@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.0+beta.2
+
+- **Fixed:** when the money ran out, the plan carried the shortfall as a debt that later Social Security paid back, so the line could dip below $0 and come back as if you'd borrowed. Balances now stop at $0. Bills in those years are counted as unpaid, and if income later beats the budgeted bills, the leftover builds up from $0.
+- When that happens, the verdict and the shortfall note say when the balance comes back and how much went unpaid in between.
+- The money chart is now in today's dollars, like the rest of the plan, so a small yearly leftover no longer looks like a fortune by 95.
+
 ## 2.1.0+beta.1
 
 ### Money math

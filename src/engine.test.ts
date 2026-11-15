@@ -6,6 +6,8 @@ import {
   acaFor,
   acaPercent,
   badStartReturns,
+  recoveryAge,
+  unpaidThrough,
   covers,
   deferralLimit,
   derivedForState,
@@ -179,6 +181,40 @@ describe("simulation", () => {
   it("records the coverage gap in a non-expansion state", () => {
     const sim = run({ strategy: "lump", k401: 600000, state: "TN", retireAge: 59, ageNow: 58 });
     expect(sim.health[1].kind).toBe("gap");
+  });
+});
+
+describe("running out of money", () => {
+  // Runs out at 60, then a $2,600/mo check from 62 is more than the budget.
+  const over = { ssMonthly: 2600, ssAge: 62, ssPia: undefined };
+
+  it("never carries a negative balance", () => {
+    for (const strategy of ["lump", "split", "asNeeded"] as const) {
+      const sim = run({ ...over, strategy });
+      expect(Math.min(...sim.balances)).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("records the unpaid bills instead of borrowing them", () => {
+    const sim = run(over);
+    expect(sim.depletedAge).toBe(60);
+    expect(sim.unpaid[1]).toBeGreaterThan(0);
+    expect(unpaidThrough(sim, 59, 61)).toBeGreaterThan(20000);
+  });
+
+  it("does not let later Social Security repay the gap years", () => {
+    const sim = run(over);
+    const back = recoveryAge(sim, 59);
+    expect(back).not.toBeNull();
+    // Recovery starts as soon as Social Security beats the bills, not after a debt is paid off.
+    expect(back!).toBeLessThanOrEqual(63);
+    expect(sim.unpaid[back! - 59]).toBe(0);
+  });
+
+  it("reports no recovery when income never beats the bills", () => {
+    const sim = run();
+    expect(sim.depletedAge).toBe(60);
+    expect(recoveryAge(sim, 59)).toBeNull();
   });
 });
 

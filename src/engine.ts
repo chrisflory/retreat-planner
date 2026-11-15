@@ -1270,6 +1270,8 @@ export type SimResult = {
   year0Cost: number;
   year0FromSavings: number;
   stranded: number | null;
+  /** Bills left unpaid each year after the money ran out, in today's dollars. 0 in a year that was covered. */
+  unpaid: number[];
   /** Pre-65 health coverage each simulated year, for the health-cost table. */
   health: HealthPlan[];
 };
@@ -1320,6 +1322,7 @@ export function simulate(
   // Interest earned on cash last year. It is already in the balance; it's taxed and counted as ACA income the next year.
   let lastInterest = 0;
   const balances: number[] = [];
+  const unpaid: number[] = [];
   const health: HealthPlan[] = [];
 
   if (isLump(p)) {
@@ -1339,6 +1342,7 @@ export function simulate(
     if (collapseAge !== null && age >= collapseAge) {
       if (stranded === null) stranded = Math.max(0, balance + cash);
       balances.push(Math.max(0, balance + cash));
+      unpaid.push(0);
       continue;
     }
     const f = Math.pow(1 + inf, t);
@@ -1373,8 +1377,11 @@ export function simulate(
             taxOnWithdrawal(w, p, age, p.txMove, ssCheck, otherOrdinary, f).total
           : 0;
       const after = balance - (cost - income + extra + laterTax + interestTax);
-      lastInterest = after > 0 ? after * rCash : 0;
-      balance = after + lastInterest;
+      // Money can't go below $0. A shortfall is a bill nobody pays, not a loan that later Social Security repays.
+      unpaid.push(after < 0 ? -after / f : 0);
+      const kept = Math.max(0, after);
+      lastInterest = kept * rCash;
+      balance = kept + lastInterest;
     } else {
       const inTexas = t === 0 && p.txMove;
       const growth = adjust?.returns?.[t] ?? r401;
@@ -1410,16 +1417,31 @@ export function simulate(
       cash -= s.fromCash;
       if (s.gapTax < 0) cash += -s.gapTax;
       const after = balance - (balance > 0 ? s.w : Math.max(0, s.need));
-      balance = after > 0 ? after * (1 + growth) : after;
+      // The withdrawal was grossed up for tax, so a shortfall is roughly the part of the need the account couldn't cover.
+      unpaid.push(after < 0 ? Math.min(-after, Math.max(0, s.need)) / f : 0);
+      balance = Math.max(0, after) * (1 + growth);
       lastInterest = cash > 0 ? cash * rCash : 0;
       cash += lastInterest;
     }
     const total = balance + cash;
-    if (total <= 0 && depletedAge === null) depletedAge = age;
+    if ((total <= 0 || unpaid[unpaid.length - 1] > 0) && depletedAge === null) depletedAge = age;
     balances.push(total);
   }
-  return { balances, depletedAge, year0Gross, year0Tax, year0Cost, year0FromSavings, stranded, health };
+  return { balances, depletedAge, year0Gross, year0Tax, year0Cost, year0FromSavings, stranded, unpaid, health };
 }
+
+/** After the money first runs out, the first age the balance is back above $0 because income beat the bills. */
+export function recoveryAge(sim: SimResult, startAgeOfPlan: number): number | null {
+  if (sim.depletedAge === null) return null;
+  for (let k = sim.depletedAge - startAgeOfPlan + 1; k < sim.balances.length; k++) {
+    if (sim.balances[k] > 0 && (sim.unpaid[k] ?? 0) === 0) return startAgeOfPlan + k;
+  }
+  return null;
+}
+
+/** Total unpaid bills, today's dollars, from the money running out until a given age. */
+export const unpaidThrough = (sim: SimResult, startAgeOfPlan: number, age: number) =>
+  sim.unpaid.slice(0, Math.max(0, age - startAgeOfPlan + 1)).reduce((s, n) => s + n, 0);
 
 export const covers = (sim: SimResult, goal: number) => sim.depletedAge === null || sim.depletedAge > goal;
 
