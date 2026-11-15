@@ -152,6 +152,8 @@ import {
   type SimAdjust,
   setEstimates,
   marketOdds,
+  recoveryAge,
+  unpaidThrough,
   badStartReturns,
   hasSpouse,
   fplOf,
@@ -737,16 +739,15 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       }
     }
   }
-  const afterLine = (sim: SimResult): (number | null)[] =>
+  /** A scenario's balances in today's dollars (the plan's costs are in today's dollars too), using that scenario's inflation. */
+  const afterLine = (sim: SimResult, infPct = p.inflation): (number | null)[] =>
     ages.map((_, i) => {
       const age = nowAge + i;
       if (age < retireAt) return null;
       const k = age - retireAt;
       const v = sim.balances[k];
       if (v == null) return null;
-      if (v >= 0) return Math.round(v);
-      // The line ends at $0 the year the money runs out instead of diving into a shortfall.
-      return k === 0 || (sim.balances[k - 1] ?? 0) >= 0 ? 0 : null;
+      return Math.round(Math.max(0, v) / Math.pow(1 + infPct / 100, k));
     });
   const nestAtRetirement = beforeWithdrawals[retireAt - nowAge];
   const cashAtRetirement = afterLine(normal)[retireAt - nowAge];
@@ -775,6 +776,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     () => (part === "sustain" ? null : marketOdds(p, rec, upfrontTotal, p.inflation, land, goal)),
     [oddsKey],
   );
+  const backAt = recoveryAge(normal, startAge(p));
+  const unpaidGap =
+    normal.depletedAge !== null ? unpaidThrough(normal, startAge(p), (backAt ?? END_AGE + 1) - 1) : 0;
+  const incomeNames = (p.otherIncome ?? 0) > 0 ? "Social Security and part-time pay" : "Social Security";
   const oddsPct = odds ? Math.round(odds.chance * 100) : 0;
   const oddsTone: "success" | "warning" | "danger" = oddsPct >= 85 ? "success" : oddsPct >= 60 ? "warning" : "danger";
   const pre65Health = normal.health.slice(0, Math.max(0, 65 - retireAt));
@@ -917,6 +922,11 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
           <div className="hero-goal">
             <span>{covered ? `Covers your goal of ${goal}` : `${goal - (normal.depletedAge ?? goal)} years short of ${goal}`}</span>
           </div>
+          {backAt !== null && (
+            <div className="hero-note">
+              Back above $0 at {backAt}, when {incomeNames} starts to beat the bills
+            </div>
+          )}
         </div>
         <div className="hero-side">
           <Row gap={6} wrap align="center">
@@ -978,7 +988,11 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
       >
         {covered
           ? `With the numbers entered now, money lasts to age ${lastsLabel(normal)}. Pick a later age to see what that would take.`
-          : `That's ${goal - (normal.depletedAge ?? goal)} years early. Keeping everything else the same, either of these closes the gap:`}
+          : `That's ${goal - (normal.depletedAge ?? goal)} years early.${
+              backAt !== null
+                ? ` From ${normal.depletedAge} to ${backAt - 1} about ${money(unpaidGap)} of bills (today's dollars) have nothing to pay them. From ${backAt} on, ${incomeNames} is more than the budgeted bills, so the leftover builds up again and the chart line climbs back. That money only exists if you really spend no more than the budget.`
+                : ""
+            } Keeping everything else the same, either of these closes the gap:`}
         {!covered && (
           <Stack gap={4} style={{ marginTop: 6 }}>
             <Text size="small">
@@ -1455,7 +1469,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
 
         <div className="plan-results">
           <Card>
-            <CardHeader>Money remaining by age</CardHeader>
+            <CardHeader>Money remaining by age, in today's dollars</CardHeader>
             <CardBody>
               <Stack gap={10}>
                 <LineChart
@@ -1469,7 +1483,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                     ...(p.ssCut
                       ? []
                       : [{ name: `Social Security cut to ${EST.ssCutPct}% in ${EST.ssCutYear}`, data: afterLine(ssCutSim), tone: "danger" as const }]),
-                    { name: `High inflation (${EST.highInflation}%)`, data: afterLine(highInf), tone: "warning" },
+                    { name: `High inflation (${EST.highInflation}%)`, data: afterLine(highInf, EST.highInflation), tone: "warning" },
                     { name: `Collapse at ${p.collapseAge} (cash frozen)`, data: afterLine(collapse), tone: "neutral" },
                   ]}
                   valuePrefix="$"
@@ -1504,8 +1518,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
                     {savings > 0 ? " plus other savings" : ""}; wages aren't shown. The dotted drop at retirement is the
                     401(k) before tax down to what's left after tax, the land and setup, and the first year of costs.
                     After that, "All at once" and "Split" are cash in the bank and "As needed" is what's still in the
-                    401(k). The 401(k) grows {p.ret}% a year and cash earns {p.cashReturn ?? 0}%. Each line stops at $0
-                    the year the money runs out.
+                    401(k). The 401(k) grows {p.ret}% a year and cash earns {p.cashReturn ?? 0}%. Amounts are in today's dollars, so a line that holds flat is
+                    keeping up with inflation. A line sits at $0 in
+                    years the money has run out; those bills go unpaid and aren't carried forward as a debt. If income
+                    later beats the budgeted bills, the leftover builds the line back up.
                     {roughSim
                       ? ` The rough start gives the 401(k) a ${Math.round(p.ret - 2 * (p.vol ?? 10))}% return in year one and ${Math.round(p.ret - (p.vol ?? 10))}% in years two and three, then ${p.ret}% after that.`
                       : ""}

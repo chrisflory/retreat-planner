@@ -455,6 +455,11 @@ textarea.input {
   font-weight: 600;
   color: var(--text-primary);
 }
+.hero-note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
 .hero-side {
   display: flex;
   flex-direction: column;
