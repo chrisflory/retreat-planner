@@ -12,7 +12,7 @@ export async function getJSON<T = unknown>(url: string, timeoutMs = 45000): Prom
   return (await res.json()) as T;
 }
 
-const CLEAR_BROWSER = /(^|\.)zillow\.com$/i;
+const CLEAR_BROWSER = /(^|\.)(zillow|land|landwatch)\.com$/i;
 
 export async function openExternal(url: string) {
   let host = "";
