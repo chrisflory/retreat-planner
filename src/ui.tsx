@@ -200,17 +200,20 @@ export function Pill({
   children,
   active,
   size = "md",
+  color,
   onClick,
 }: {
   children?: ReactNode;
   active?: boolean;
   size?: "sm" | "md";
+  /** Color when active. Blue (the accent) if not set. */
+  color?: "green";
   onClick?: () => void;
 }) {
   return (
     <button
       type="button"
-      className={`pill${active ? " active" : ""}${size === "sm" ? " sm" : ""}${onClick ? " clickable" : ""}`}
+      className={`pill${active ? " active" : ""}${color ? ` ${color}` : ""}${size === "sm" ? " sm" : ""}${onClick ? " clickable" : ""}`}
       onClick={onClick}
     >
       <span className="pill-label">{children}</span>

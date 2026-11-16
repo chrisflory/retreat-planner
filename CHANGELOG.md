@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.0+beta.5
+
+- The living-cost preset buttons (Bare-bones, Modest, Comfortable) now light up in green for the preset that matches your living costs, so they're easy to tell from the blue Heat with buttons. Editing any line the preset sets turns the highlight off, because the costs are then your own.
+
 ## 2.1.0+beta.4
 
 - **Fixed LandWatch links.** The app put the property type in the wrong place in the address, so every type except All land and Undeveloped (and any search with a home type on) opened LandWatch's "We couldn't find this page". The type now goes after the county, the way LandWatch builds its own links.
