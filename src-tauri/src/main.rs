@@ -4,12 +4,13 @@ use std::process::{Command, Stdio};
 
 use tauri_plugin_dialog::DialogExt;
 
-/// Zillow often answers Brave with Access Denied. Open it in Chrome or Firefox.
-/// Land.com and Lands of America deny every page from this computer, so the app
-/// does not open those hosts.
+/// Zillow, Land.com and LandWatch often answer Brave with an Akamai Access Denied page.
+/// Open them in Chrome or Firefox instead.
 fn clear_browser(host: &str) -> bool {
     let host = host.trim_start_matches("www.");
-    host == "zillow.com" || host.ends_with(".zillow.com")
+    ["zillow.com", "land.com", "landwatch.com"]
+        .iter()
+        .any(|site| host == *site || host.ends_with(&format!(".{site}")))
 }
 
 fn https_host(url: &str) -> Option<&str> {

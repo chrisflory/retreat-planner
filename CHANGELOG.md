@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.0+beta.4
+
+- **Fixed LandWatch links.** The app put the property type in the wrong place in the address, so every type except All land and Undeveloped (and any search with a home type on) opened LandWatch's "We couldn't find this page". The type now goes after the county, the way LandWatch builds its own links.
+- **Land.com is back,** with the county, property type, price and acres (homes use Land.com's residential search).
+- Zillow, LandWatch and Land.com open in Chrome or Firefox when one is installed, because these sites often answer Brave with Access Denied.
+- Checked by loading all 80 combinations (8 property types including homes, 5 places, both sites) from the user's computer: every one loads with real results.
+
 ## 2.1.0+beta.3
 
 - **Saved plans:** name and save every entry (assumptions, setup and living costs, estimates), then load, export or delete it from "Saved plans" at the top of Assumptions. Loading keeps what you had as "Before loading …" so you can switch back. Export writes a .json file with the system save dialog; Import adds a plan file to the list.

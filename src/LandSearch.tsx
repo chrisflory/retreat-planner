@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { LANDCOM_HOMES, LANDWATCH_HOMES, landComUrl, landwatchUrl } from "./landLinks";
 import {
   Callout,
   Card,
@@ -40,7 +41,7 @@ import { clampAcresToRange, DEFAULT_COUNTIES, readPlanAcres, syncHoaFromListing,
 type PropType = "any" | "hunting" | "recreational" | "farms" | "undeveloped" | "timber" | "waterfront";
 
 const PROP_TYPES: Record<PropType, { label: string; lw: string; lc: string }> = {
-  any: { label: "All land", lw: "land", lc: "all-land" },
+  any: { label: "All land", lw: "", lc: "all-land" },
   hunting: { label: "Hunting", lw: "hunting-property", lc: "hunting-land" },
   recreational: { label: "Recreational", lw: "recreational-property", lc: "recreational-property" },
   farms: { label: "Farms and ranches", lw: "farms-and-ranches", lc: "ranches" },
@@ -237,13 +238,9 @@ function searchLinks(c: Criteria, county: string | null) {
   const t = PROP_TYPES[c.type];
   const lo = Math.max(0, Math.round(c.acresMin));
   const hi = Math.max(0, Math.round(c.acresMax));
-  const lwAcres =
-    lo > 0 && hi > lo ? `/acres-${lo}-${hi}` : lo > 0 ? `/acres-over-${lo}` : hi > 0 ? `/acres-under-${hi}` : "";
-  const lwPrice = c.priceMax > 0 ? `/price-under-${Math.round(c.priceMax)}` : "";
-  const countySeg = county ? `/${slug(county)}-county` : "";
+  const q = { stateName: st.name, stateCode: code, county, acresMin: lo, acresMax: hi, priceMax: Math.max(0, c.priceMax) };
   const where = county ? `"${county} County" ${code}` : st.name;
   const dwelling = wantsDwelling(c.zillow);
-  const lwKind = dwelling ? "homes" : t.lw;
   const typeWords = c.type === "any" ? "" : `${t.label.toLowerCase()} `;
   const acres = lo > 0 || hi > 0 ? `${lo}-${hi} acres ` : "";
   const dwellingWords = [
@@ -261,7 +258,8 @@ function searchLinks(c: Criteria, county: string | null) {
   const place = county ? `${slug(county)}-county-${code.toLowerCase()}` : code.toLowerCase();
   const zillow = zillowSearch(place, lo, hi, Math.max(0, Math.round(c.priceMax)), c.zillow);
   return [
-    { site: "LandWatch", url: `https://www.landwatch.com/${slug(st.name)}-${lwKind}-for-sale${countySeg}${lwPrice}${lwAcres}` },
+    { site: "LandWatch", url: landwatchUrl(q, dwelling ? LANDWATCH_HOMES : t.lw || null) },
+    { site: "Land.com", url: landComUrl(q, dwelling ? LANDCOM_HOMES : t.lc) },
     { site: "Zillow", url: zillow },
     { site: "Other brokers (Google)", url: `https://www.google.com/search?q=${encodeURIComponent(google)}` },
   ];
@@ -653,11 +651,11 @@ export default function LandSearch({
                 starts on and Auction starts off. Bedrooms and bathrooms start at Any, so a lot with no house is kept.
                 Exact bedroom count sends that number only.{" "}
                 {wantsDwelling(c.zillow)
-                  ? "A house type is on, so LandWatch opens its homes search for the same county, acres, and price."
-                  : "No house type is on, so LandWatch stays on vacant land for the property type above."}{" "}
+                  ? "A house type is on, so LandWatch and Land.com open their homes searches for the same county, acres, and price."
+                  : "No house type is on, so LandWatch and Land.com stay on land for the property type above."}{" "}
                 {c.zillow.auction
                   ? "Auction is on, so auction listings are included."
-                  : "Auction is off. The broker search drops that word. LandWatch has no auction switch, so skip a card there if it says auction."}
+                  : "Auction is off. The broker search drops that word. LandWatch and Land.com have no auction switch, so skip a card there if it says auction."}
               </Text>
               <Field label="Acres, minimum">
                 <Num
@@ -742,11 +740,11 @@ export default function LandSearch({
         <Stack gap={12}>
           <H2>1. Search the listing sites</H2>
           <Text tone="secondary">
-            LandWatch opens in your usual browser on the county, {wantsDwelling(c.zillow) ? "homes" : "property type"}, {c.acresMin}–
-            {c.acresMax} acres{c.priceMax > 0 ? `, and under ${money(c.priceMax)}` : ""}. Land.com and Lands of America
-            answer this computer with Access Denied on every page, including a single listing, in Chrome as well as
-            Brave. Those buttons are gone. Zillow opens in Chrome with the home types and listing types checked above,
-            on that acre range and price. Save the search on the site to get new listings by email.
+            LandWatch and Land.com open on the county, {wantsDwelling(c.zillow) ? "homes" : "property type"}, {c.acresMin}–
+            {c.acresMax} acres{c.priceMax > 0 ? `, and under ${money(c.priceMax)}` : ""}. Zillow opens with the home types
+            and listing types checked above, on that acre range and price. All three open in Chrome or Firefox when one is
+            installed, because these sites often answer Brave with Access Denied. If a site still shows Access Denied,
+            turn off a VPN or try again later; it isn't the link. Save the search on the site to get new listings by email.
           </Text>
           <Table headers={["Where", "Open search"]} rows={linkRows} />
           <Callout tone="neutral" title="Why the app doesn't scrape the sites">
