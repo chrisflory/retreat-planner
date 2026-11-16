@@ -156,6 +156,10 @@ button::selection {
   border-color: var(--accent);
   color: #fff;
 }
+.pill.active.green {
+  background: var(--c-green);
+  border-color: var(--c-green);
+}
 
 .stat {
   display: flex;

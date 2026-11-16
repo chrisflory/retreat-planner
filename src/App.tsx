@@ -632,6 +632,10 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
     setRec((prev) => ({ ...prev, propane: Math.round(h.propaneGal * EST.propanePrice), firewood: h.firewood }));
   };
   const applyLiving = (id: LivingPreset) => setRec((prev) => ({ ...prev, ...LIVING_PRESETS[id].values }));
+  /** The preset whose amounts all match the living costs now. None once any of its lines is edited. */
+  const activeLiving = (Object.keys(LIVING_PRESETS) as LivingPreset[]).find((id) =>
+    Object.entries(LIVING_PRESETS[id].values).every(([k, v]) => (rec[k] ?? 0) === v),
+  );
   const setFlock = (hens: number) => {
     const n = Math.max(0, Math.round(hens));
     if (n <= 0) {
@@ -1948,7 +1952,7 @@ export default function RetreatPlan({ part = "plan" }: { part?: "plan" | "sustai
         <Row gap={8} wrap>
           <Text size="small" tone="tertiary">Living-cost preset</Text>
           {(Object.keys(LIVING_PRESETS) as LivingPreset[]).map((id) => (
-            <Pill key={id} onClick={() => applyLiving(id)}>
+            <Pill key={id} active={activeLiving === id} color="green" onClick={() => applyLiving(id)}>
               {LIVING_PRESETS[id].label}
             </Pill>
           ))}
